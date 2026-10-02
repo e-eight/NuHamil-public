@@ -96,10 +96,24 @@ STAMP="$(date +%Y%m%dT%H%M%S)"
 LOG="log.${CASE}.rank${NTASKS}.omp${OMP_NUM_THREADS}.${STAMP}.txt"
 ENVF="run-${SLURM_JOB_ID:-local}.env"
 
+# --- cold-start guarantee --------------------------------------------------
+# NuHamil caches intermediates in the run directory (cfp/ = Jacobi space,
+# ops/ = operators, NNint_*.gz = relative NN interaction) and skips them on a
+# re-run.  A warm run therefore measures cache reads rather than compute and is
+# NOT comparable with a cold one -- the deuteron returns a different printed
+# quantity purely because the cache hit changes the code path.  Benchmark runs
+# start clean by default; set NUHAMIL_CLEAN=0 to keep the cache (e.g. to resume
+# a pre-empted job under scavenger --requeue).
+COLD=0
+if [ "${NUHAMIL_CLEAN:-1}" = "1" ]; then
+    rm -rf cfp ops ./*.me2j.gz ./*.me3j.gz ./*.gz
+    COLD=1
+fi
+
 echo "=== case=${CASE} kind=${KIND} job=${SLURM_JOB_ID:-?} node=${SLURM_NODELIST:-?}"
 echo "=== ranks=${NTASKS} cpus/rank=${NCPU} OMP=${OMP_NUM_THREADS} part=${SLURM_JOB_PARTITION:-?}"
 echo "=== bin=${BIN}"
-echo "=== input=${INPUT}  log=${LOG}"
+echo "=== input=${INPUT}  log=${LOG}  cold=${COLD}"
 echo "=== restart=${SLURM_RESTART_COUNT:-0}  start=$(date -Is)"
 
 START_EPOCH=$(date +%s)
@@ -134,6 +148,7 @@ WALL=$((END_EPOCH - START_EPOCH))
     echo "input=$INPUT"
     echo "log=$LOG"
     echo "scratch_root=$SCRATCH_ROOT"
+    echo "cold=$COLD"
     echo "wall_s=$WALL"
     echo "exit_code=$RC"
     echo "restart_count=${SLURM_RESTART_COUNT:-0}"

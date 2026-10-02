@@ -364,7 +364,7 @@ def add_scaling(recs):
 
 CSV_COLS = [
     "case", "tier", "kind", "status", "jobid", "partition", "nodelist",
-    "ntasks", "cpus_per_task", "omp_num_threads", "total_threads",
+    "ntasks", "cpus_per_task", "omp_num_threads", "total_threads", "cold",
     "wall_s", "sacct_elapsed", "sacct_maxrss_mb", "sacct_maxrss_kb",
     "sacct_maxvmsize_kb", "time_v_maxrss_mb", "exit_code",
     "acct_max_s", "acct_mean_s", "acct_min_s",
