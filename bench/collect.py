@@ -404,15 +404,23 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     envs = sorted(runs.glob("*/run-*.env"))
-    if args.cases:
-        envs = [e for e in envs if e.parent.name in set(args.cases)]
     if not envs:
         sys.exit("no run-*.env found under %s (submit a case first)" % runs)
 
+    # Always collect and persist EVERY run.  --cases narrows only the printed
+    # table: filtering the output too would let a narrow query silently discard
+    # the other cases from results.csv/json.
     recs = [collect_run(e, do_sacct=not args.no_sacct) for e in envs]
     recs = add_scaling(recs)
     recs.sort(key=lambda r: (r.get("case") or "", r.get("total_threads") or 0,
                              r.get("jobid") or ""))
+
+    shown = recs
+    if args.cases:
+        want = set(args.cases)
+        shown = [r for r in recs if r.get("case") in want]
+        if not shown:
+            sys.exit("no runs match --cases %s" % ", ".join(args.cases))
 
     csv_path = out / "results.csv"
     with open(csv_path, "w", newline="") as fh:
@@ -429,13 +437,16 @@ def main():
               % ("case", "rank", "omp", "wall_s", "acct_max", "acct_mean",
                  "imbal", "status"))
         print("-" * 84)
-        for r in recs:
+        for r in shown:
             print("%-22s %5s %5s %8s %10s %10s %9s %6s"
                   % (r.get("case"), r.get("ntasks"), r.get("omp_num_threads"),
                      fmt(r.get("wall_s")), fmt(r.get("acct_max_s")),
                      fmt(r.get("acct_mean_s")),
                      fmt(r.get("imbalance_max_over_mean")), r.get("status")))
         print()
+        if args.cases:
+            print("filter   : --cases %s (%d of %d runs shown)"
+                  % (" ".join(args.cases), len(shown), len(recs)))
         print("runs     : %d" % len(recs))
         print("results  : %s" % csv_path)
         print("           %s" % json_path)
