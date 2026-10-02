@@ -79,8 +79,12 @@ program main
   call fin_M1_2b_current()
 
   call fin_dtrinomial()
+
+  ! timer%fin() must run BEFORE mpi_finalize: the profiler now emits one
+  ! machine readable line per rank (#PROF_RANK ...) and non-zero ranks lose
+  ! their stdout forwarding once MPI has been finalised.
+  call timer%fin()
 #ifdef MPI
   call mpi_finalize(ierr)
 #endif
-  call timer%fin()
 end program main
