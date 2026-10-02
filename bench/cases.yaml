@@ -1,0 +1,98 @@
+# ---------------------------------------------------------------------------
+# NuHamil-faster benchmark case definitions
+#
+# Consumed by bench/gen_cases.py (builds inputs) and bench/collect.py (parses
+# results).  A case stores the *arguments* to the upstream parameter builders
+# rather than a raw namelist, so all derived quantities (jmax3, LECs, output
+# file names, ...) stay in one place:
+#
+#   kind: deuteron  -> exe/few-body/deuteron.py    set_input()
+#   kind: namelist2 -> exe/NuHamil_2BME.py         set_input()
+#   kind: namelist3 -> exe/NuHamil_3BME.py         set_input()
+#
+# tier:  smoke | small | medium | large | production
+#        'production' cases are DEFINED but EXCLUDED from the default sweep
+#        (they are the real 2-day / ~200 GB targets).
+#
+# Nothing in this file writes to $HOME.  All outputs go under scratch_root.
+# ---------------------------------------------------------------------------
+version: 1
+
+scratch_root: /scratch/soham/NuHamil-faster
+
+defaults:
+  nn: N3LO_EM500            # NNF  : two-body interaction
+  tnf: N3LOEMlnl            # TNF  : three-body interaction (3N cases only)
+  hw: 30                    # starting hw [MeV]
+  hw_target: 16             # target hw after conversion (3N cases only)
+  emax: 8
+  e2max: 16
+  e3max: 6
+
+cases:
+
+  - id: deuteron
+    tier: smoke
+    kind: deuteron
+    description: >-
+      Deuteron ground state, N3LO_EM500 bare, hw=30.  Fast correctness smoke
+      test for any new build.
+    hw: 30
+    reference:
+      energy_MeV: -2.22434870
+      tolerance_MeV: 1.0e-5
+      source: "~/NuHamil-public/deuteron_test.log (frozen in golden/logs/)"
+
+  - id: 2bme_lab_emax14
+    tier: medium
+    kind: namelist2
+    description: >-
+      Lab-frame HO two-body matrix elements, emax=14, e2max=28, hw=16,
+      SRG(2.0).  README quotes ~15 min on 16 OpenMP threads.
+    hw: 16
+    emax: 14
+    e2max: 28
+    reference: {}
+
+  - id: 3bme_e3max6
+    tier: small
+    kind: namelist3
+    description: >-
+      3N lab-frame ME, emax=8 e2max=16 e3max=6, hw=30->16, N3LO_EM500 +
+      N3LOEMlnl.  32 (J,P,T) channels; single precision.
+    emax: 8
+    e2max: 16
+    e3max: 6
+    reference: {}
+
+  - id: 3bme_e3max8
+    tier: medium
+    kind: namelist3
+    description: >-
+      3N lab-frame ME, emax=8 e2max=16 e3max=8, hw=30->16.  40 channels.
+    emax: 8
+    e2max: 16
+    e3max: 8
+    reference: {}
+
+  - id: 3bme_e3max10
+    tier: large
+    kind: namelist3
+    description: >-
+      3N lab-frame ME, emax=8 e2max=16 e3max=10, hw=30->16.  48 channels.
+    emax: 8
+    e2max: 16
+    e3max: 10
+    reference: {}
+
+  - id: 3bme_e3max16_emax14
+    tier: production
+    kind: namelist3
+    description: >-
+      Production-size 3N lab-frame ME, emax=14 e2max=28 e3max=16, hw=30->16.
+      72 channels.  README quotes ~2 days / ~200 GB as a serial+matching case;
+      this is the real performance target for the project.
+    emax: 14
+    e2max: 28
+    e3max: 16
+    reference: {}
