@@ -10,6 +10,12 @@
 #   kind: namelist2 -> exe/NuHamil_2BME.py         set_input()
 #   kind: namelist3 -> exe/NuHamil_3BME.py         set_input()
 #
+# 3N cases are instantiated once per entry in their ramp_sweep, producing run
+# dirs named <case-id>__<ramp-name>.  The ramp is the only control on the
+# lab-frame 3N channel truncation (ThreeBodyManager.F90:107) and therefore on
+# the size of the Jacobi space (cfp/), which dominates both memory and setup
+# time.  Non-3N cases keep their plain <case-id>.
+#
 # tier:  smoke | small | medium | large | production
 #        'production' cases are DEFINED but EXCLUDED from the default sweep
 #        (they are the real 2-day / ~200 GB targets).
@@ -28,6 +34,25 @@ defaults:
   emax: 8
   e2max: 16
   e3max: 6
+
+# ---------------------------------------------------------------------------
+# Jacobi-space ramps.  GetRampNmax() in src/ThreeBody/ThreeBodyJacobiSpaceIso.F90
+# matches on 2J+1, so these strings expand to:
+#
+#   ramplarge  "ramp40-5-36-7-32-9-28-11-24"
+#              2J+1 <= 5 -> Nmax 40, <= 7 -> 36, <= 9 -> 32, <= 11 -> 28, else 24
+#              (the upstream exe/NuHamil_3BME.py default)
+#   rampsmall  "ramp20-5-18-7-16"
+#              2J+1 <= 5 -> Nmax 20, <= 7 -> 18, else 16
+#              (the reduced ramp used for the 2026-10-02 ramp20/ sweep)
+#
+# gen_cases.py records the exact per-channel Nmax map in each manifest
+# (derived.nmax_per_channel) so it can be cross-checked against the "Nmax ="
+# values the code prints for every channel.
+# ---------------------------------------------------------------------------
+ramps:
+  ramplarge: "ramp40-5-36-7-32-9-28-11-24"
+  rampsmall: "ramp20-5-18-7-16"
 
 cases:
 
@@ -57,6 +82,7 @@ cases:
   - id: 3bme_e3max6
     tier: small
     kind: namelist3
+    ramp_sweep: [ramplarge, rampsmall]
     description: >-
       3N lab-frame ME, emax=8 e2max=16 e3max=6, hw=30->16, N3LO_EM500 +
       N3LOEMlnl.  32 (J,P,T) channels; single precision.
@@ -68,6 +94,7 @@ cases:
   - id: 3bme_e3max8
     tier: medium
     kind: namelist3
+    ramp_sweep: [ramplarge, rampsmall]
     description: >-
       3N lab-frame ME, emax=8 e2max=16 e3max=8, hw=30->16.  40 channels.
     emax: 8
@@ -78,6 +105,7 @@ cases:
   - id: 3bme_e3max10
     tier: large
     kind: namelist3
+    ramp_sweep: [ramplarge, rampsmall]
     description: >-
       3N lab-frame ME, emax=8 e2max=16 e3max=10, hw=30->16.  48 channels.
     emax: 8
@@ -88,10 +116,11 @@ cases:
   - id: 3bme_e3max16_emax14
     tier: production
     kind: namelist3
+    ramp_sweep: [ramplarge, rampsmall]
     description: >-
       Production-size 3N lab-frame ME, emax=14 e2max=28 e3max=16, hw=30->16.
-      72 channels.  README quotes ~2 days / ~200 GB as a serial+matching case;
-      this is the real performance target for the project.
+      72 channels.  README quotes ~2 days / ~200 GB; this is the real
+      performance target for the project.
     emax: 14
     e2max: 28
     e3max: 16
