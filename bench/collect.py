@@ -140,25 +140,77 @@ def sha256_of(path, limit=HASH_LIMIT):
     return h.hexdigest()
 
 
+TIME_V_RE = re.compile(r"Maximum resident set size \(kbytes\):\s*(\d+)")
+
+
+def parse_time_v(text):
+    """Peak RSS reported by `/usr/bin/time -v` (single-rank runs only)."""
+    m = TIME_V_RE.search(text)
+    return int(m.group(1)) if m else None
+
+
+def to_kb(txt):
+    """Slurm prints MaxRSS with a unit suffix (K/M/G); normalise to KiB."""
+    if not txt:
+        return None
+    t = txt.strip()
+    if t in ("", "0", "0K"):
+        return 0
+    mult = {"K": 1, "M": 1024, "G": 1024 ** 2, "T": 1024 ** 3}
+    if t[-1].upper() in mult:
+        try:
+            return int(float(t[:-1]) * mult[t[-1].upper()])
+        except ValueError:
+            return None
+    try:
+        return int(float(t))
+    except ValueError:
+        return None
+
+
 def sacct_info(jobid):
+    """Aggregate Elapsed/MaxRSS over every step of a job.
+
+    `-X` (allocations only) leaves MaxRSS blank on this Slurm build, so query
+    all steps and keep the largest RSS seen; the wall time comes from the
+    top-level job line.
+    """
     if not jobid or jobid == "local" or shutil.which("sacct") is None:
         return {}
     try:
         out = subprocess.check_output(
-            ["sacct", "-j", str(jobid), "-X", "-n", "-P",
-             "-o", "Elapsed,MaxRSS,MaxVMSize,State,ExitCode"],
+            ["sacct", "-j", str(jobid), "-n", "-P",
+             "-o", "JobID,Elapsed,MaxRSS,MaxVMSize,State,ExitCode"],
             stderr=subprocess.DEVNULL, text=True, timeout=30)
     except Exception:
         return {}
+
+    info, maxrss, maxvms = {}, None, None
     for line in out.splitlines():
         line = line.strip()
-        if not line or line.startswith("batch") or "|" not in line:
+        if not line or "|" not in line:
             continue
         f = line.split("|")
-        return {"sacct_elapsed": f[0], "sacct_maxrss": f[1],
-                "sacct_maxvmsize": f[2], "sacct_state": f[3],
-                "sacct_exitcode": f[4]}
-    return {}
+        if len(f) < 6:
+            continue
+        jid, elapsed, rss, vms, state, ec = (f[0], f[1], f[2], f[3], f[4], f[5])
+        if jid.endswith(".extern"):
+            continue
+        if "sacct_elapsed" not in info and elapsed:
+            info["sacct_elapsed"] = elapsed
+            info["sacct_state"] = state
+            info["sacct_exitcode"] = ec
+        r, v = to_kb(rss), to_kb(vms)
+        if r is not None:
+            maxrss = r if maxrss is None else max(maxrss, r)
+        if v is not None:
+            maxvms = v if maxvms is None else max(maxvms, v)
+    if maxrss:
+        info["sacct_maxrss_kb"] = maxrss
+        info["sacct_maxrss_mb"] = round(maxrss / 1024.0, 1)
+    if maxvms:
+        info["sacct_maxvmsize_kb"] = maxvms
+    return info
 
 
 def mean(xs):
@@ -270,6 +322,11 @@ def collect_run(env_path, do_sacct=True):
             rec["output_bytes"] = op.stat().st_size
             rec["output_sha256"] = sha256_of(op)
 
+    tv = parse_time_v(text)
+    if tv is not None:
+        rec["time_v_maxrss_kb"] = tv
+        rec["time_v_maxrss_mb"] = round(tv / 1024.0, 1)
+
     if do_sacct:
         rec.update(sacct_info(meta.get("jobid")))
     if rec.get("sacct_elapsed"):
@@ -308,7 +365,8 @@ def add_scaling(recs):
 CSV_COLS = [
     "case", "tier", "kind", "status", "jobid", "partition", "nodelist",
     "ntasks", "cpus_per_task", "omp_num_threads", "total_threads",
-    "wall_s", "sacct_elapsed", "sacct_maxrss", "exit_code",
+    "wall_s", "sacct_elapsed", "sacct_maxrss_mb", "sacct_maxrss_kb",
+    "sacct_maxvmsize_kb", "time_v_maxrss_mb", "exit_code",
     "acct_max_s", "acct_mean_s", "acct_min_s",
     "imbalance_max_over_mean", "imbalance_max_over_min",
     "efficiency_mean_over_max",
