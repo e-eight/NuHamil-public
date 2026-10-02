@@ -160,23 +160,72 @@ All under `/scratch/soham/NuHamil-faster/golden/`, with checksum manifests.
 | `me3j/provenance/` | inputs, run logs, timings, `sacct` records for those runs |
 | `PROVENANCE.txt`, `SHA256SUMS`, `SHA256SUMS-me3j` | provenance + integrity |
 
+## Memory: the ramp is a memory knob first — measured 2026-10-02
+
+Job C (`ramplarge` e3max6 @ 32 ranks) was **OOM-killed** after 4:25:16:
+
+```
+11113167.0 | OUT_OF_MEMORY | MaxRSS 21477536K   (~20.5 GiB in one rank)
+srun: error: ccc0259: task 5: Out Of Memory
+```
+
+| case | peak RSS / rank | note |
+| --- | --- | --- |
+| rampsmall e3max6 @ 8 and @ 32 | 1.65 GB | flat across rank count |
+| ramplarge e3max6 @ 32 | **~20.5 GiB** | OOM-killed against a 200 GiB allocation |
+
+- **[measured]** The ramp changes peak memory by **~13x** (1.65 GB -> 20.5 GiB).
+  The earlier "peak RSS is flat" result was **rampsmall-specific** and must not be
+  generalised: at rampsmall everything is small enough that the ramp barely moves
+  the peak.
+- **[inferred] H1 gains strong support.** The lab dims the code prints for the
+  Nmax=40 channels are 24560, 28254, 30756, 31580 and 34020 states. At single
+  precision one `dim x dim` matrix at dim=34020 is `34020^2 x 4 B = 4.6 GB`, so
+  four or five live matrices reach ~20 GB. The ramp sets `dim`, hence the peak.
+- **[measured]** Memory does **not** accumulate across channels: rampsmall @ 8 ranks
+  (4 channels per rank) has the same peak as @ 32 ranks (1 channel per rank).
+  So an 8-rank ramplarge run should peak near 20.5 GiB/rank, not 4x that.
+
+### Complete ramplarge cfp distribution (e3max6, 32/32 files)
+
+File counts match the ramp exactly, so this directory is complete.
+
+| Nmax | channels | bytes | share |
+| --- | --- | --- | --- |
+| 40 (head) | 12 | 1052 MB | 40.9 % |
+| 36 | 4 | 593 MB | 23.1 % |
+| 32 | 4 | 435 MB | 16.9 % |
+| 28 | 4 | 256 MB | 9.9 % |
+| 24 (tail) | 8 | 236 MB | **9.2 %** |
+| total | 32 | 2.57 GB | 100 % |
+
+- **[measured]** Tail-only trimming can recover at most **~9 %** of `cfp/` bytes at
+  e3max6 — weaker than even the invalid 21.7 % figure, not stronger.
+- **[inferred]** This share is **e3max-dependent and must not be extrapolated**:
+  the tail tier covers `2J+1 > 11`, i.e. j >= 13, which is 8 of 32 channels at
+  e3max6 but 16 of 40 at e3max8 and roughly 48 of 60 at e3max16 — while the head
+  (j <= 5) stays fixed at 12 channels. The production-case share has to be measured.
+- **[measured]** The `cfp/` question is largely academic anyway: the Jacobi build is
+  only ~2.9 % of wall time, and at ramplarge the peak memory is set by the
+  lab-space operator matrices rather than by these files.
+
 ## Corrections log
 
-1. **"The Jacobi space dominates memory."** *Retracted.* Peak RSS holds at
-   ~1.61 GB/rank from e3max 6 to 9 while `cfp/` changes 17x between ramps, so the
-   Jacobi space is not what sets the peak. The original claim came from reading
-   ramplarge *disk* sizes as if they were the resident footprint.
-2. **"Tail-only trimming has a ~22 % ceiling."** *Invalid, not merely imprecise.*
-   It was computed from the ramplarge e3max=8 `cfp/` directory, which contains
-   **27 files instead of the 40 the ramp implies** — that run (`11108627`) was
-   cancelled at 28:51, so the directory is partial. The Nmax=24 tail tier was the
-   worst affected (8 files of 16), meaning the true tail share is *higher*; a crude
-   per-file extrapolation suggests roughly 30 %, but this must be re-measured on a
-   complete directory (job C, ramplarge e3max6) before it is quoted.
+1. **"The Jacobi space dominates memory."** *Retracted as stated, but the underlying
+   intuition was right.* Peak RSS holds at ~1.61 GB/rank from e3max 6 to 9 at
+   **rampsmall**, so the `cfp/` files are not what sets the peak. The original claim
+   came from reading ramplarge *disk* sizes as if they were the resident footprint.
+   However, the ramp **does** drive memory hard (~13x, see above) — just through the
+   lab-space operator matrices, not the `cfp/` files.
+2. **"Tail-only trimming has a ~22 % ceiling."** *Invalid, and the corrected answer
+   is lower, not higher.* It was computed from the ramplarge e3max=8 `cfp/`
+   directory, which contains **27 files instead of the 40 the ramp implies** — that
+   run (`11108627`) was cancelled at 28:51, so the directory was partial. I first
+   guessed the true share would be ~30 %; the complete e3max6 directory gives
+   **9.2 %**. See the table above.
 
-   *Lesson:* check that a result directory is complete before aggregating it.
-   The complete rampsmall directory happens to have exactly its expected 40 files,
-   which is now a useful sanity check.
+   *Lesson:* check that a result directory is complete before aggregating it, and
+   state the extrapolation basis when generalising across e3max.
 
 ## Open hypotheses
 
