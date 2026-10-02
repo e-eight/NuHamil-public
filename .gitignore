@@ -1,0 +1,11 @@
+# build artefacts (never commit these)
+/obj/
+/mod/
+/exe/*.exe
+*.o
+*.mod
+*.smod
+
+# python
+__pycache__/
+*.pyc
