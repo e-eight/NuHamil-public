@@ -3,6 +3,17 @@
 Living document. Update the checkboxes as work lands; keep durable technical
 knowledge in [`FINDINGS.md`](FINDINGS.md) instead of here.
 
+GitHub tracker: [#1](https://github.com/e-eight/NuHamil-public/issues/1) P1 ·
+[#2](https://github.com/e-eight/NuHamil-public/issues/2) P2 ·
+[#3](https://github.com/e-eight/NuHamil-public/issues/3) P3 ·
+[#4](https://github.com/e-eight/NuHamil-public/issues/4) P3b ·
+[#5](https://github.com/e-eight/NuHamil-public/issues/5) P4 ·
+[#6](https://github.com/e-eight/NuHamil-public/issues/6) P5
+
+This file and the issues are deliberately kept in step: issues carry *state*,
+this file carries the same state next to the code, and `FINDINGS.md` carries the
+*knowledge* that should outlive both.
+
 ## Goal
 
 Explore three directions on top of the third-party NuHamil code, without
