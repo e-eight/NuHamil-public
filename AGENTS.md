@@ -2,6 +2,8 @@
 
 NuHamil generates nucleon–nucleon (NN) and three-nucleon (3N) matrix elements in the harmonic-oscillator basis. Fortran 2003+ with OpenMP/MPI; Python is used only for run drivers and tooling.
 
+> **Where things stand:** active work is tracked in [`docs/PLAN.md`](docs/PLAN.md) and durable technical findings — measurements, environment quirks, retracted claims — in [`docs/FINDINGS.md`](docs/FINDINGS.md). Read both before making changes; `FINDINGS.md` tags every number as measured, inferred, or retracted.
+
 ## Project Structure & Module Organization
 
 - `src/` — driver `NuHamilMain.F90`, namelist `NuHamilInput.F90`, `Profiler.F90`, `MPIFunction.F90`, containers `ClassSys.f90`, `MyLibrary.F90`, `OperatorDefinitions.F90`, `Renormalization.F90`.
