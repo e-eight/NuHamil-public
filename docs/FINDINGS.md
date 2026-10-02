@@ -121,6 +121,49 @@ Same case, same binary, only the rank count differs:
   Causes not yet separated (scavenger node contention vs per-rank profiling
   overhead). **Repeat runs are needed before quoting small deltas.**
 
+## The MPI farm, read from source (2026-10-02)
+
+- **[measured]** `src/MPIFunction.F90` is a single-token ping-pong: a worker sends
+  `idummy` to rank 0 and blocks on `mpi_recv`; rank 0 receives from `MPI_ANY_SOURCE`,
+  records the owner in `slranks`, and replies with the unit number. Same tag (1) for
+  everything, all blocking, no `Isend/Irecv`, no RMA, no cost model.
+- **[measured]** Rank 0's dispatch loop is `do num_loops = 1, ntotal`, so the number
+  of work units is **fixed at the call site** — the farm cannot be finer than its
+  `ntotal`.
+- **[measured]** The 97 % cost is the call at `src/ThreeBody/TMTransFunctions.inc:25`,
+  `parent_child_procedure(calc_each_channel, nch, ...)` with
+  **`nch = ((jmax3+1)/2)*4 = 32`** for e3max6 — one whole `(J,P,T)` channel per unit.
+  The other call sites use `(e3max+2)*4`, `ch1dim`, `spmon%GetNumberChannels()`, etc.
+- **[measured]** A work unit (`calc_each_channel`) does: (1) build the Jacobi space
+  and write `cfp_*.bin`; (2) read it back; (3) `v3%InitNNNForce` / `U%init` /
+  `v3%SetNNNForce` — the dominant step — writing `NNNint*.bin` and `UT_NNN*.bin`.
+  So the unit's *result* is already a file.
+- **[measured]** **Per-channel checkpointing already exists**: a unit returns early
+  if `s%isfile(fv) .and. s%isfile(fut)`. The planned "per-channel checkpointing for
+  `--requeue`" is therefore not new work — it is why `NUHAMIL_CLEAN=0` resumes.
+- **[measured]** After the channel farm, results are redistributed by
+  `ThreeBodyLabOpsIso.inc:922-939`: rank 0 broadcasts `slranks`, then **each rank in
+  turn `mpi_bcast`s its full `MatCh(ch,ch)` (dim^2 elements) to all ranks**, serially.
+  Every rank therefore ends up holding every channel's matrix — memory is
+  O(sum over channels of dim^2), not O(1).
+- **[inferred]** That redistribution explains two measurements at once: peak RSS is
+  *flat across rank count* (every rank holds everything either way), and peak RSS
+  grows strikingly with the ramp (dim^2). It also means adding ranks adds memory
+  pressure without reducing it.
+- **[measured]** Ranks then redundantly recompute the same results — the log shows
+  every rank printing the same "Eigen values of 3-body H" for its channels.
+
+**Design consequences for P3** (finer granularity alone would backfire):
+
+1. Work units must be subdivided *inside* a channel (by bra-blocks of the Jacobi
+   channel or by the `jpnl` partial-wave blocks), not by adding call sites.
+2. Finer units multiply the handshake count, and every handshake is two blocking
+   messages through rank 0. **The protocol must be replaced in the same change**,
+   or granularity will make things worse.
+3. The result redistribution — not the farm — is the memory wall. Since each unit
+   already writes its result to a file, removing the all-to-all broadcast is the
+   highest-leverage change.
+
 ## Cluster environment
 
 - **[measured]** `IllinoisComputes`: 22 nodes x 128 cores, 512 GB, 3.8 GB/core,
@@ -229,16 +272,27 @@ File counts match the ramp exactly, so this directory is complete.
 
 ## Open hypotheses
 
-- H1: the 1.6 GB/rank peak is lab-space operator matrices, not the Jacobi space.
-  *(Open — peak RSS is flat across e3max and rank count, which is consistent with
-  a per-channel lab-space matrix but does not yet identify it.)*
+- H1: the peak RSS is set by per-channel matrix storage, not the Jacobi space.
+  *Source reading now points at the result redistribution in
+  `ThreeBodyLabOpsIso.inc:922-939` (every rank receives every channel's `dim^2`
+  matrix), which is consistent with RSS being flat across rank count and growing
+  with the ramp. Still needs an allocation-level profile to confirm — note the
+  printed dims (up to 34020) are the **non-antisymmetrised** `NAStates`, and the
+  force is built in the smaller antisymmetrised basis (`AStates`, e.g. 11340), so
+  the `dim^2 x 4 B` estimate must use the right one.*
 - H2: ~~the ramp's effect on wall time is dominated by the lab-space dimension
   rather than the `cfp/` construction.~~ **Refuted** — the `cfp/` build is ~2.9 % of
   the run; the three-body force construction is ~97 %. The ramp's *runtime* effect
   therefore acts through the force/operator construction, not the Jacobi build.
-- H4: the wall time is set by the single most expensive channel, because a channel
-  is an indivisible work unit. Subdividing channels into bra-block tiles should
-  recover scaling past ~8 ranks.
+- H4: the wall time is set by the most expensive channel, because a channel is an
+  indivisible work unit. **Confirmed in source**: `nch = 32` for e3max6, one unit per
+  rank at 32 ranks, so the dynamic scheduler has nothing to balance. Subdividing
+  inside a channel should recover scaling past ~8 ranks — *but only together with a
+  protocol change, since finer units multiply the blocking handshakes.*
+- H5: the result redistribution (all-to-all `mpi_bcast` of every channel matrix) is
+  a bigger scaling obstacle than the farm itself, because it is O(sum dim^2) memory
+  per rank and serialises gigabytes of communication. Units already write results
+  to files, so it may be removable without changing the numerics.
 - H3: the `InitThreeBodyJacIsoSpace` channel loop is serial and not work-shared, so
   every rank reads all channels (`src/ThreeBody/ThreeBodyJacobiSpaceIso.F90:137-163`).
   *(Largely moot for runtime, given H2, but still a memory/IO concern.)*
