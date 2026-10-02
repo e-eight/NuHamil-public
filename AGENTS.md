@@ -37,4 +37,6 @@ There is no unit-test framework. `src/tests.F90::test_main()` is a stub — add 
 
 Upstream history uses short, sentence-case subjects (`Add optional phase parameter handling in MyLibrary`). This fork prefixes the touched area: `bench:`, `Profiler:`, `Build:`.
 
-Pull requests should state the physics or performance motivation, the exact command used, and the reference values compared. For performance work, attach before/after `bench/collect.py` output; flag any numerical change explicitly.
+`upstream` points at third-party code (github.com/Takayuki-Miyagi/NuHamil-public) and is **read-only for us** — never push there, and its push URL is disabled locally by design. Do all work on a branch and push to this project's own fork, which is tracked as `origin` (`git remote -v`).
+
+Pull requests target the fork, not upstream. State the physics or performance motivation, the exact command used, and the reference values compared. For performance work, attach before/after `bench/collect.py` output; flag any numerical change explicitly.
