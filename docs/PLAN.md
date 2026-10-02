@@ -62,7 +62,7 @@ breaking the existing working build:
       wall, peak RSS, rank imbalance, per-phase split
   - [x] First MPI rank sweep (e3max6 rampsmall): 8 ranks 1947 s, 32 ranks 2294 s
         — **negative scaling**, see `FINDINGS.md`
-  - [x] Ramp comparison arm 1 (rampsmall @32, 38:25) complete; ramplarge @32 in flight
+  - [x] Cold-start guarantee — warm re-runs were measuring cache reads, not compute
   - [ ] Repeat runs to bound run-to-run spread (+10 % observed between identical
         configurations) before quoting small deltas
   - [ ] OpenMP sweep, and 2-node MPI
@@ -70,16 +70,28 @@ breaking the existing working build:
 
 ### P2 — Portable, non-rigid build
 
-- [ ] **Track A** site/compiler fragments (`SITE=`/env, not `hostname` sniffing),
-      dependency probing, optional HDF5, `makedepf90` optional, `EXEDIR`/`INSTLDIR`
-      never `$HOME`, `PRECISION=` selector, `make print-config` / `check-deps`
-- [ ] Remove the temporary ICC block (commit `397b08e`) and add `.gitignore`
+- [x] **A.1** Site-fragment mechanism: `config/site.mk` selects
+      `config/sites/<SITE>.mk` from `SITE=` → `NUHAMIL_SITE` → hostname fallback,
+      warning on an unknown site instead of silently using the wrong toolchain
+- [x] **A.2** ICC converted to the first fragment (`config/sites/icc.mk`, extracted
+      verbatim); the Makefile no longer special-cases ICC
+- [x] **A.3** `.gitignore` for `obj/`, `mod/`, `exe/*.exe`, `__pycache__/`
+- [x] **A.4** Inert-refactor proof: 132 compile commands identical, both binaries
+      bit-identical (`ad7fe067…`), deuteron result unchanged
+- [ ] **A.5** Convert the remaining host blocks (`other`/`strongint`/`apt`/`oak`/
+      `cedar`/`juwels`) to fragments and delete the `hostname` sniffing
+- [ ] **A.6** Compiler-family fragments (`gnu`/`intel`/`aocc`/`nvhpc`) replacing the
+      `findstring $(FC)` string-matching for `MODOUT`/`FLINES`/`LINT`
+- [ ] **A.7** Dependency probing (`makedepf90` is absent on ICC); optional HDF5
+      (one file, `src/ThreeBody/NNNFFromFile.F90`); `PRECISION=` selector
+- [ ] **A.8** `EXEDIR`/`INSTLDIR` overridable and never defaulting to `$HOME`;
+      `make print-config` / `check-deps`
 - [ ] **Track B** thin CMake + `CMakePresets.json` (carrier for GPU targets later)
 - [ ] Validate a second toolchain: AOCC/flang + AOCL (already installed)
 - *Exit:* clean-checkout build on ICC + one other toolchain, comparable to golden
 
-Do Track A in small steps, rebuilding on `scavenger` (57 s) and re-checking the
-deuteron result after each, so a regression can't invalidate the baseline.
+Each step is rebuilt on `scavenger` (57 s) and re-checked against the deuteron
+result, so a regression can't invalidate the baseline.
 
 ### P3 — Parallelization (3-body lab-frame only)
 
@@ -94,8 +106,13 @@ deuteron result after each, so a regression can't invalidate the baseline.
 
 - [x] Ramp as an explicit sweep axis (`ramplarge`, `rampsmall`), recorded per run
 - [x] Measure the existing `ramp20` sweep
-- [ ] Ramp comparison A/B (job C) → what actually sets the 1.6 GB/rank peak
-- [ ] Re-test the memory hypothesis; recommend a production ramp
+- [x] Peak memory measured: rampsmall 1.65 GB/rank vs ramplarge **~20.5 GiB/rank**
+      (OOM-killed at 32 ranks) — the ramp is a memory knob first
+- [x] Complete `cfp/` distribution: the Nmax24 tail is 9.2 % of bytes at e3max6
+- [ ] Ramp comparison at a fixed rank count: rampsmall @8 = 32:34 vs ramplarge @8
+      (job `11117512` running). 32 ranks is infeasible at ramplarge — ~656 GiB
+      against a 515 GB node
+- [ ] Recommend a production ramp
 - *Exit:* measured cost/memory vs ramp and a recommendation
 
 ### P4 — GPU feasibility, then staged offload
@@ -113,6 +130,11 @@ deuteron result after each, so a regression can't invalidate the baseline.
 
 ## Open questions
 
-- What actually drives the 1.6 GB/rank peak, if not the Jacobi space?
-- Is the ~2.5 min `cfp/` build really a small share of the ~35 min wall time?
+- ~~What actually drives the peak, if not the Jacobi space?~~ **Answered:** the
+  lab-space operator matrices. Lab dims reach 34020 states, and one single-precision
+  `dim × dim` matrix is 4.6 GB, so a handful of live matrices accounts for the
+  20.5 GiB/rank peak seen at ramplarge. See `FINDINGS.md`.
+- ~~Is the `cfp/` build really a small share of the wall time?~~ **Answered:** yes —
+  the three-body force construction is ~97 %, the Jacobi build ~2.9 %.
 - Does the ramp need to become a runtime parameter rather than a namelist string?
+  *(still open)*
