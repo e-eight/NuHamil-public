@@ -27,6 +27,11 @@
 #   OMP_NUM_THREADS=N      OpenMP threads (default: $SLURM_CPUS_PER_TASK)
 #   NUHAMIL_PROF_DUMP=0/1  per-rank per-category profiler dump (default: 1)
 #   NH_SCRATCH_ROOT=<dir>  scratch root (default: /scratch/soham/NuHamil-faster)
+#   NUHAMIL_RUNDIR=<dir>   override the run directory (default: $SCRATCH_ROOT/runs/<case-id>)
+#                          Required when several configurations of the SAME case run
+#                          concurrently: each run starts cold by deleting cfp/, ops/
+#                          and *.gz, so two jobs sharing a directory would destroy
+#                          each other's work in progress.
 #
 # Writes only under $SCRATCH_ROOT/runs/<case-id>/ ; nothing to $HOME.
 # Per-run metadata goes to run-<jobid>.env, consumed by bench/collect.py.
@@ -37,7 +42,7 @@ CASE="${1:?usage: run_case.sbatch <case-id>   (see bench/gen_cases.py --list)}"
 
 SCRATCH_ROOT="${NH_SCRATCH_ROOT:-/scratch/soham/NuHamil-faster}"
 REPO="${NH_REPO:-/u/soham/NuHamil-faster/upstream}"
-RUNDIR="$SCRATCH_ROOT/runs/$CASE"
+RUNDIR="${NUHAMIL_RUNDIR:-$SCRATCH_ROOT/runs/$CASE}"
 TAG="${NUHAMIL_TAG:-base}"
 NTASKS="${SLURM_NTASKS:-1}"
 NCPU="${SLURM_CPUS_PER_TASK:-1}"
