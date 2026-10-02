@@ -49,6 +49,12 @@ breaking the existing working build:
 - [x] **P1d** Harvest 3N `.me3j.gz` reference products into `golden/me3j/`
 - [ ] **P1c** Scaling sweep: OpenMP {1..32} x MPI ranks {1..64}, 1→2 nodes;
       wall, peak RSS, rank imbalance, per-phase split
+  - [x] First MPI rank sweep (e3max6 rampsmall): 8 ranks 1947 s, 32 ranks 2294 s
+        — **negative scaling**, see `FINDINGS.md`
+  - [x] Ramp comparison arm 1 (rampsmall @32, 38:25) complete; ramplarge @32 in flight
+  - [ ] Repeat runs to bound run-to-run spread (+10 % observed between identical
+        configurations) before quoting small deltas
+  - [ ] OpenMP sweep, and 2-node MPI
 - *Exit:* reproducible numbers, serial-vs-MPI curve, "where the time goes"
 
 ### P2 — Portable, non-rigid build

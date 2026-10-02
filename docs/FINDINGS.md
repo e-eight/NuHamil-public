@@ -87,11 +87,39 @@ the runner measures `srun`, not the ranks).
 - **[measured]** Deuterium correctness anchor: `E = -2.22434846` MeV against the
   reference `-2.22434870` (tolerance 1e-5).
 - **[inferred]** At rampsmall the entire `cfp/` build finished in ~2.5 min of a
-  ~35 min run, so the Jacobi construction looks like a small share of the wall
-  time at that ramp. Confirmation pending.
+- **[measured]** The `cfp/` (Jacobi) build is **not** the runtime driver: at 8 ranks
+  the three-body force construction is 1887 s of 1945 s (~97 %), while
+  `set three-body Jacobi op` is 56 s (~2.9 %).
 - **[inferred]** Prime suspect for the constant 1.6 GB/rank: lab-space operator
   matrices at single precision (dim^2 x 4 B; one channel printed 17010 states,
   giving ~1.2 GB). Unconfirmed.
+
+## MPI scaling — measured 2026-10-02 (rampsmall, e3max6)
+
+Same case, same binary, only the rank count differs:
+
+| ranks | wall | speedup vs 8 | peak RSS/rank | imbalance (max/mean) | max/min |
+| --- | --- | --- | --- | --- | --- |
+| 8 | 1947 s (32:34) | 1.00 | 1652.6 MB | 1.249 | 1.984 |
+| 32 | 2294 s (38:25) | **0.85** | 1657.9 MB | 1.522 | 1.996 |
+
+- **[measured]** **More ranks is slower.** 4x the ranks runs 18 % *longer*; the
+  parallel efficiency of 32 ranks relative to 8 is ~21 %.
+- **[measured]** Peak RSS per rank is **independent of rank count**
+  (1652.6 vs 1657.9 MB), so memory does not improve with MPI either.
+- **[measured]** Imbalance *worsens* with more ranks: max/mean 1.249 -> 1.522.
+- **[measured]** Rank 0 does no physics — its entire 2294 s sits inside
+  `MPI parent-child, three-body force`.
+- **[inferred]** Mechanism: a channel is an indivisible work unit and there are
+  only `(e3max+2)*4 = 32` of them here. At 32 ranks (31 workers) the farm
+  degenerates to about one channel per worker, so dynamic scheduling has nothing
+  left to smooth and the wall becomes the slowest single channel. At 8 ranks each
+  worker gets ~4 channels and the schedule self-balances. **The fix is finer work
+  units, not more ranks.**
+- **[measured]** Caveat — run-to-run spread is not negligible. The same case at
+  32 ranks took 34:55 with the frozen binary on other nodes vs 38:25 here (+10 %).
+  Causes not yet separated (scavenger node contention vs per-rank profiling
+  overhead). **Repeat runs are needed before quoting small deltas.**
 
 ## Cluster environment
 
@@ -153,7 +181,15 @@ All under `/scratch/soham/NuHamil-faster/golden/`, with checksum manifests.
 ## Open hypotheses
 
 - H1: the 1.6 GB/rank peak is lab-space operator matrices, not the Jacobi space.
-- H2: the ramp's effect on wall time is dominated by the lab-space dimension rather
-  than the `cfp/` construction.
+  *(Open — peak RSS is flat across e3max and rank count, which is consistent with
+  a per-channel lab-space matrix but does not yet identify it.)*
+- H2: ~~the ramp's effect on wall time is dominated by the lab-space dimension
+  rather than the `cfp/` construction.~~ **Refuted** — the `cfp/` build is ~2.9 % of
+  the run; the three-body force construction is ~97 %. The ramp's *runtime* effect
+  therefore acts through the force/operator construction, not the Jacobi build.
+- H4: the wall time is set by the single most expensive channel, because a channel
+  is an indivisible work unit. Subdividing channels into bra-block tiles should
+  recover scaling past ~8 ranks.
 - H3: the `InitThreeBodyJacIsoSpace` channel loop is serial and not work-shared, so
   every rank reads all channels (`src/ThreeBody/ThreeBodyJacobiSpaceIso.F90:137-163`).
+  *(Largely moot for runtime, given H2, but still a memory/IO concern.)*
