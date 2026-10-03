@@ -49,6 +49,7 @@ breaking the existing working build:
 | Parallelization scope | 3-body lab-frame only (the only mode MPI supports, and the dominant cost) |
 | PR to open | After Phase 2, so the temporary ICC Makefile block is gone |
 | Benchmark comparison | Pair configurations on one node (`--nodelist`), or repeat across nodes: `scavenger` is heterogeneous and one node is up to 1.67x faster |
+| Upstream bug fixes | Allowed when one blocks a measurement, if the change is minimal, documented, and numerically verified (deuteron anchor + `bench/accept.py`) |
 
 ## Phases
 
@@ -67,17 +68,23 @@ breaking the existing working build:
 - [ ] **P1c** Scaling sweep: OpenMP {1..32} x MPI ranks {1..64}, 1→2 nodes;
       wall, peak RSS, rank imbalance, per-phase split
   - [x] First MPI rank sweep (e3max6 rampsmall): 8 ranks 1947 s, 32 ranks 2294 s
-        — **negative scaling**, see `FINDINGS.md`
+        — ~~negative scaling~~ **retracted**: the two points were on different CPU
+        vendors *and* ran concurrently in one run directory; see `FINDINGS.md`
   - [x] Cold-start guarantee — warm re-runs were measuring cache reads, not compute
   - [x] Run-to-run spread explained: **same-node repeats agree to ~2 %; the
         larger spread is node heterogeneity** (up to 1.67x, Intel vs AMD) — see
         `FINDINGS.md`
-  - [x] OpenMP sweep at constant 32 CPUs (rampsmall e3max6): **8x4 784 s** best;
-        1x32 4185, 2x16 4267, 16x2 1799, 32x1 2294 — see `FINDINGS.md`
+  - [x] OpenMP sweep (rampsmall e3max6): 8x4 best; 1x32 4185, 2x16 4267, 16x2
+        1799, 32x1 2294 s — but those points span nodes, so only the ordering is
+        usable; the one-node, one-binary comparison is **1.15x** — see `FINDINGS.md`
   - [x] Tuned-BLAS A/B (MKL LP64 vs Netlib reference, 8x4, link-line only):
         **1.98x** paired on one node, numerics PASS — see `FINDINGS.md`
-  - [ ] **Re-measure the MPI rank sweep with both points on ONE node** — the
-        8x1/32x1 pair was Intel vs AMD, so the 0.85x figure is confounded
+  - [x] **Re-measured the MPI rank sweep on ONE node** (ccc0497, EPYC 9555, one
+        binary, cold): 8x1 1360 s -> 32x1 883 s = **1.54x faster** — scaling is
+        sub-linear but *positive*; at a constant 32 CPUs threads beat ranks by only
+        **1.15x** (8x4 765 s vs 32x1 883 s), not the 2.9x first reported
+  - [x] Fixed the NN-cache TOCTOU race that made cold >=32-rank runs crash (4/4
+        before, clean after; deuteron + `accept.py` unchanged) — see `FINDINGS.md`
   - [ ] 2-node MPI
 - *Exit:* reproducible numbers, serial-vs-MPI curve, "where the time goes"
 
@@ -115,12 +122,23 @@ result, so a regression can't invalidate the baseline.
 
 ### P3 — Parallelization (3-body lab-frame only)
 
+*Sizing (revised 2026-10-03).* The thread-vs-rank gap is **1.15x** at a constant 32
+CPUs on one node, not the 2.9x first reported — that figure was a node difference.
+Scaling 8 -> 32 ranks is **1.54x** (sub-linear, ~38 % efficiency), so the coarse
+32-unit farm is a real but not catastrophic limit. The profile's **25 % of cycles
+idling at OpenMP barriers** and the O(sum dim^2) result redistribution remain the
+two concrete targets; the exit target below should be revisited against the 1.15x
+starting point.
+
 - [ ] Attribution with `papi/7.1.0` + per-rank timers
 - [ ] Re-architect the master–worker farm: cost-weighted tiles, decentralised
       queue, point-to-point result return, drop barriers, overlap comm/compute
 - [ ] Fill OpenMP gaps, remove `!$omp critical` accumulators, tune affinity
 - [ ] Per-channel checkpointing so `scavenger --requeue` resumes
+- [x] Prerequisite: fixed the NN-cache TOCTOU race that crashed cold runs at
+      >=32 ranks (`src/TwoBody/NNForce.F90`, atomic publish) — see `FINDINGS.md`
 - *Exit:* >= 2x on the medium case, numerics match golden, scaling to >= 2 nodes
+  *(the >= 2x target predates the corrected baseline — re-derive it first)*
 
 ### P3b — Jacobi-space / ramp cost
 

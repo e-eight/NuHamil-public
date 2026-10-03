@@ -103,6 +103,10 @@ the runner measures `srun`, not the ranks).
 
 ## MPI scaling — measured 2026-10-02 (rampsmall, e3max6)
 
+> **Superseded 2026-10-03 — see "MPI scaling, re-measured on one node" below.**
+> These two points are not a valid comparison: they ran on different CPU vendors
+> *and* concurrently in one shared run directory.
+
 Same case, same binary, only the rank count differs:
 
 | ranks | wall | speedup vs 8 | peak RSS/rank | imbalance (max/mean) | max/min |
@@ -132,7 +136,40 @@ Same case, same binary, only the rank count differs:
   scaling is therefore confounded and must be re-measured on one node. See
   "Benchmark methodology".**
 
-## OpenMP works, and it is where the speed is — measured 2026-10-02
+## MPI scaling, re-measured on one node — the negative-scaling claim is refuted (2026-10-03)
+
+The pair above cannot support its conclusion (different CPU vendors, plus the two
+runs shared one run directory concurrently). Re-measured **cold, on one physical
+node (ccc0497, EPYC 9555) with one binary** (`fix-nncache`, see "The NN cache
+handoff had a race" below). Three jobs, every one `bench/accept.py` PASS:
+
+| config | CPUs | job | wall | imbalance max/mean | peak RSS/rank | accept |
+| --- | --- | --- | --- | --- | --- | --- |
+| 8 ranks x 1 | 8 | 11140240 | 1360 s | 1.083 | 1652.6 MB | pass, 1.61e-06 |
+| 32 ranks x 1 | 32 | 11140303 | **883 s** | 1.491 | 1653.0 MB | pass, 1.5e-07 |
+| 8 ranks x 4 | 32 | 11140856 | **765 s** | 1.080 | 1655.9 MB | pass, 1.61e-06 |
+
+- **[measured, refutes the earlier claim] More ranks is *faster*, not slower.**
+  8 -> 32 ranks at 1 thread each gives **1.54x** (1360 -> 883 s) for 4x the CPUs,
+  i.e. ~38 % parallel efficiency. That scaling is poor, but it is **positive**;
+  the recorded 0.85x was an artefact of comparing two different nodes.
+- **[measured] At a constant 32 CPUs, threads beat ranks by only 1.15x** on one
+  node (8x4 = 765 s vs 32x1 = 883 s). The 2.9x previously recorded for this exact
+  comparison was almost entirely the node gap (ccc0499 Zen 5 vs ccc0258 Zen 2).
+  The OpenMP conclusion survives in **direction**, not in **size**.
+- **[measured]** Reproduces the old *shape* while inverting the old *sign*: peak
+  RSS/rank is still flat across rank count (1652.6 / 1653.0 / 1655.9 MB), and the
+  imbalance still grows with rank count (1.083 -> 1.491).
+- **[inferred] The mechanism stands; its size does not.** A channel is still an
+  indivisible work unit, and at 32 ranks the wall is still set by the slowest
+  single channel. That predicts *sub-linear* scaling, which is what we now
+  measure — not *negative* scaling. Finer work units are still the lever; the
+  earlier evidence simply did not show what it claimed.
+- **[open]** 2-node MPI is still unmeasured. Each configuration also has a single
+  sample here, so the ~3 % cross-node spread seen in the MKL section is not
+  resolved for these points.
+
+## OpenMP works — measured 2026-10-02 (magnitude corrected 2026-10-03)
 
 First thread measurement in the project. rampsmall e3max6, constant 32 CPUs:
 
@@ -150,10 +187,12 @@ First thread measurement in the project. rampsmall e3max6, constant 32 CPUs:
 - **[inferred]** This also reframes the negative-scaling result: 32 ranks x 1 thread
   is the *worst* use of 32 CPUs here. The GPUs/threads argument is not "use fewer
   ranks" but "give each rank threads".
-- **[measured, caveat]** These points span nodes (8x4 on ccc0499, 16x2/32x1 on
-  ccc0258, 2x16 on ccc0496, 1x32 on ccc0498 — see "Benchmark methodology"). The
-  ~5x gap between 8x4 and 1x32 is far larger than the ~1.7x node effect, so the
-  conclusion holds; the ordering of adjacent points does not.
+- **[measured, caveat — corrected 2026-10-03]** These points span nodes, and the
+  **2.9x headline was largely the node difference, not threading.** Re-measured on
+  one node with one binary: **8x4 765 s vs 32x1 883 s = 1.15x** (see "MPI scaling,
+  re-measured on one node"). Threading still wins at a constant CPU count and still
+  collapses the imbalance (1.080 vs 1.491), but the effect is modest. The direction
+  of the P3 conclusion survives; its magnitude does not.
 
 ### Threading does not preserve bit-identical output (and neither does MPI)
 
@@ -222,6 +261,56 @@ code), :`), not raw binary. Comparing decompressed text line by line:
 3. The result redistribution — not the farm — is the memory wall. Since each unit
    already writes its result to a file, removing the all-to-all broadcast is the
    highest-leverage change.
+
+## The NN cache handoff had a race — fixed 2026-10-03
+
+Cold 32-rank runs of any case that builds the NN force **crashed 4/4 times** within
+12-15 s:
+
+```
+Not found .//NNint_A2_rel_N3LO_EM500_bare_Nmax100_hw30.gz
+Calculating NN interaction in relative coordinate:
+At line 522 of file src/TwoBody/NNForce.F90
+Fortran runtime error: End of file
+srun: error: ccc0497: task 1: Exited with exit code 2
+```
+
+The `mpi/pmix_v6` lines srun printed around it are a **consequence, not the cause**.
+`SetNNForceHO` (`src/TwoBody/NNForce.F90`) is a TOCTOU race on the relative NN cache:
+
+- ~line 149 — **each rank decides for itself**: `if(.not. s%isfile(f))` -> compute,
+  `else` -> `call this%readf(f)`
+- ~line 197 — only the *writer* is serialised: `if(myrank == nprocs-1) call
+  vnn_large%writef(f)`
+- there is **no barrier** after the write, and `s%isfile` is a plain `inquire` — it
+  is not a readiness signal, so a rank can observe the file after it is created but
+  before it is complete
+- `ReadNNForceHORelative` **never checked `gzip_readline`'s return code**, so a short
+  read surfaced only as a bare "End of file" from the list-directed read
+
+Because `SetNNForceHO` is reached through `NNNForceHOIsospin` from inside the
+**per-channel farm**, ranks call it an *unequal* number of times. A collective fix
+(broadcast the existence flag, or a barrier) is therefore **unsafe** — it would
+deadlock or mismatch — which is presumably why the author used a per-rank `isfile`
+test instead.
+
+**Fix:** publish the cache atomically. The writer now writes `fn // '.tmp'` and
+`rename(2)`s it into place, so `isfile(fn)` only ever becomes true for a complete
+file; `gzip_readline` errors are also checked and reported now.
+
+- **[measured]** Before: 4/4 cold 32-rank attempts crashed (ccc0499; ccc0496;
+  ccc0497 twice). After: 32x1 cold on ccc0497 completed in **883 s** (32/32 `cfp`,
+  a `.me3j.gz`).
+- **[measured] The fix is numerically inert.** Deuteron `E = -2.22434846` MeV is
+  identical to the pre-fix value, and all three same-node runs PASS `accept.py`
+  against the golden product.
+- **[measured] It is also timing-neutral:** 8x1 was 1398 s before the fix (old
+  binary, ccc0499) and 1360 s after (ccc0497) — well inside the ~3 % cross-node
+  spread.
+- **[inferred]** This was a latent landmine independent of the scaling question:
+  any cold run with enough ranks to spread the start times could hit it. The earlier
+  32-rank runs likely escaped only because they were warm — their env files predate
+  the cold-start guarantee and they shared one run directory.
 
 ## Where the time actually goes — perf profile, 2026-10-02
 
@@ -547,13 +636,21 @@ File counts match the ramp exactly, so this directory is complete.
    reference-BLAS run (784 s) on an AMD node. A paired re-run on one node gives
    **1.98x** (776 s -> 391 s). *Lesson:* with a heterogeneous pool, one run per
    arm is not a measurement; pair the configurations on a node.
-4. **"MPI scales negatively: 32 ranks is 0.85x of 8."** *Caveated, pending
-   re-measurement.* The 8x1 and 32x1 points were on different CPU vendors (Intel
-   vs AMD EPYC 7702), so rank count and node speed are entangled. The mechanism
-   (one channel per rank -> no scheduling slack) is still supported by the
-   source, but the 0.85x number must not be quoted until both points run on one
-   node. *Lesson:* record `nodelist` beside every timing — the harness does, but
-   these comparisons ignored it.
+4. **"MPI scales negatively: 32 ranks is 0.85x of 8."** *Retracted — the sign was
+   wrong, and the pair had two independent defects.* The 8x1 and 32x1 points ran on
+   different CPU vendors (Intel vs AMD EPYC 7702) *and* concurrently in one shared
+   run directory. Re-measured cold on a single node with one binary, 8 -> 32 ranks
+   is **1.54x faster**, not slower (1360 -> 883 s). The mechanism (one channel per
+   rank -> no scheduling slack) still predicts *sub-linear* scaling, which is what
+   the clean measurement shows; it never predicted a *slowdown*. *Lessons:* record
+   `nodelist` beside every timing; and never run two configurations in one run
+   directory — the harness has enforced both since.
+5. **"OpenMP gives 2.9x at constant CPU count."** *Badly overstated — that figure
+   was a node comparison in disguise.* 8x4 ran on ccc0499 (Zen 5) and 32x1 on
+   ccc0258 (Zen 2). On one node with one binary the same comparison is **1.15x**
+   (765 s vs 883 s). Threads still win and still collapse the imbalance, but the
+   P3 motivation should be sized at ~1.15x, not 2.9x. *Lesson:* "constant CPU
+   count" is not "controlled experiment" when each point lands on a different node.
 
 ## Open hypotheses
 
