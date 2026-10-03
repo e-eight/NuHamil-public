@@ -208,6 +208,53 @@ code), :`), not raw binary. Comparing decompressed text line by line:
    already writes its result to a file, removing the all-to-all broadcast is the
    highest-leverage change.
 
+## Where the time actually goes — perf profile, 2026-10-02
+
+The in-code profiler can only time regions *it* wraps; it cannot see inside
+statically-linked library code. A sampling profile closes that gap.
+
+Method: one heavy channel (j3p+t1, Nmax20) left uncomputed in a copy of a finished
+run with `cfp/` intact, so every other channel returned early and the profile
+covers the force construction only. `perf record -e cycles:u` on the serial binary
+with 4 threads, **6.5 M samples**:
+
+| % cycles | symbol | note |
+| --- | --- | --- |
+| **40.1 %** | `dgemm_` | **reference BLAS** |
+| **25.4 %** | `gomp_barrier_wait_end` | OpenMP threads idling at barriers |
+| 6.4 % | `non_local_regulator_ho_mat` | |
+| 2.8 % | `exp` | |
+| 2.8 % | `__powidf2` | |
+| 3.3 % | `gsl_sf_bessel_*` (j1_/j2_/CF1/jl_) | GSL Bessel, called per regulator |
+| 1.3 % | `dcopy_` | reference BLAS |
+| 2.0 % | `__nnnforcelocal_MOD_*` | the actual 3N physics, combined |
+
+- **[measured]** **The single largest cost is `dgemm` at 40 %**, and it is Netlib
+  *reference* BLAS: `nm` shows `dgemm_` as `T` (defined in the binary) because
+  `/sw/apps/lapack/3.12.1/lib` holds only static `liblapack.a` / `librefblas.a`.
+  Tuned ILP64 alternatives are installed (MKL 2025 `libmkl_*_ilp64`, AOCL 5.0).
+- **[measured]** **Threads spend 25 % of cycles waiting at OpenMP barriers.** That
+  is the missing explanation for the ~3.3x thread ceiling: it is not a serial
+  fraction in the physics, it is synchronisation overhead. Implies the parallel
+  regions are too fine-grained or badly balanced.
+- **[inferred]** The two largest items are both **library/structure**, not physics —
+  only ~2 % is in NuHamil's own 3N force routines. This inverts the earlier
+  assumption that the win had to come from rewriting the physics.
+- **[measured]** Caveat: profiled on the serial path (`nprocs==1`) with 4 threads,
+  so it is not identical to the MPI runs. The physics code executed per channel is
+  the same, but barrier behaviour would differ with more ranks.
+
+### Consequence for priorities
+
+1. **Relink against a tuned BLAS first.** 40 % of cycles in reference `dgemm` is
+   the cheapest large win available: a link-line change in the site fragment, no
+   source edits, and `bench/accept.py` verifies the numerics. This *should precede*
+   both the P3 threading work and the P4 GPU port — a GPU port would spend its
+   effort accelerating exactly this `dgemm`, which a library swap may largely fix.
+2. **Then attack the 25 % barrier time** — that is the real P3 target, and it is a
+   scheduling/parallel-structure problem, not an arithmetic one.
+3. GSL Bessel (~3.3 %) is a smaller, independent candidate.
+
 ## GPU toolchain reconnaissance — 2026-10-02
 
 - **[measured] `nvcc` is already available**: cuda/12.4, 12.6 and 12.8 all provide
