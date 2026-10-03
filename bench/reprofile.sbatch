@@ -77,7 +77,19 @@ echo "=== channel removed: $CHAN  ->  ops files left: $(ls ops | wc -l)/64"
 echo "=== threads=$OMP_NUM_THREADS  start=$(date -Is)"
 
 START=$(date +%s)
-perf record -e cycles:u -o "$DEST/perf.data" -- "$BIN" "$INPUT" > "$DEST/run.out" 2>&1
+# NH_CALLGRAPH=1 adds stacks, which is what attributes barrier-idle time
+# (libgomp) to the parallel region that caused it -- a flat profile cannot.
+if [ "${NH_CALLGRAPH:-0}" = "1" ]; then
+    # Depth and rate matter here: the default dwarf dump is ~8 KB/sample at the
+    # default ~4 kHz, which produced an 11 GB perf.data for an 83 s run and took
+    # longer to report than to record.  2048 bytes at 197 Hz is ~35 MB and still
+    # ample to see which parallel region a barrier belongs to.
+    CG=(--call-graph dwarf,2048 -F 197)
+    echo "=== call graph: dwarf,2048 -F 197 ==="
+else
+    CG=()
+fi
+perf record -e cycles:u "${CG[@]}" -o "$DEST/perf.data" -- "$BIN" "$INPUT" > "$DEST/run.out" 2>&1
 END=$(date +%s)
 echo "=== wall=$((END - START))s"
 
@@ -87,3 +99,21 @@ echo "=== top symbols ==============================================="
 sed -n '/^ *[0-9]/p' "$DEST/perf-report.txt" | head -25
 echo "=== full report: $DEST/perf-report.txt"
 echo "=== run log:     $DEST/run.out"
+
+if [ "${NH_CALLGRAPH:-0}" = "1" ]; then
+    perf report --stdio -i "$DEST/perf.data" -g folded \
+        > "$DEST/perf-folded.txt" 2>/dev/null || true
+    echo "=== folded stacks (for attribution): $DEST/perf-folded.txt"
+    # Which parallel region does the barrier time belong to?  Walk each folded
+    # chain, find gomp_barrier_wait*, and report the nearest enclosing
+    # _omp_fn / subroutine frame.
+    awk '
+      /;gomp_(team_)?barrier_wait/ {
+        n = split($0, a, ";")
+        region = "?"
+        for (i = n; i >= 1; i--) {
+          if (a[i] ~ /_omp_fn|MOD_/) { region = a[i]; break }
+        }
+        printf "%4.2f%%  %s\n", $1, region
+      }' "$DEST/perf-folded.txt" 2>/dev/null | sort -rn | head -20
+fi

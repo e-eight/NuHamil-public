@@ -634,6 +634,49 @@ absolute column below scales the percentages by that factor):
   (~10 s), libm ~11 % (down from 40 s). The next move is the structural one P3
   already planned; the arithmetic is no longer where the time is.
 
+## The OpenMP barrier idle is Amdahl serial time, not imbalanced scheduling — 2026-10-03
+
+The re-profile left ~39 % of cycles in libgomp barrier wait (32 s of an 83 s
+phase), the largest single item, so scheduling looked like the next target. Since
+the profile runs the *serial* binary with 4 threads, that idle is intra-rank
+OpenMP, not MPI.
+
+Four hypotheses, three refuted by measurement. All four use the same phase
+(one heavy channel, `bench/reprofile.sbatch`, ccc0497):
+
+| hypothesis | change | wall | barrier |
+| --- | --- | --- | --- |
+| nested MKL teams spinning inside our threads | `MKL_NUM_THREADS=1` | 86 s | 34.7 % |
+| static-schedule imbalance in the hot loops | `schedule(dynamic)` on 6 `init_*` loops | 82 s | 35.5 % |
+| barrier cost from ~60 small regions | fuse the `x` loop, `collapse(2)`: 3 regions for `fkx`, 1 for `zx` | 82 s | 35.8 % |
+| **idle is serial-section idle** | **run the same phase with 1 thread** | **159 s** | (none) |
+
+Baseline for reference: 81-83 s wall, 38.9 % barrier.
+
+- **[measured] The fourth row is the answer.** 4-thread speedup is
+  159/82 = **1.94x**, i.e. 48 % parallel efficiency, which is exactly Amdahl's
+  law for a **~35 % serial fraction** -- matching the ~36 % barrier idle. The
+  other three fixes could not have worked, because none of them touches the
+  serial fraction; they were all treating a symptom.
+- **[measured] The 1-thread profile contains no barrier symbols at all**, so the
+  idle is unambiguously a parallel-execution artefact and not a real cost.
+- **[measured] Percentage shares move with the configuration, not only with the
+  code.** Single-threaded, MKL `dgemm` is 14.1 % and `__powidf2` is 2.4 % (vs
+  7.9 % and 1.2 % at 4 threads). Shares from one configuration should not be
+  compared to another without care.
+
+**Consequence.** OpenMP can contribute at most ~1.94x on 4 threads in this phase,
+and the idle is *not* recoverable by scheduling tuning. The lever is more **MPI
+ranks with finer work units**, which is consistent with the earlier measurement
+that ranks beat threads by 1.15x at constant CPU count. The remaining P3 items
+(the 32-unit farm, the O(sum dim^2) redistribution, rank 0 doing no physics) are
+therefore the ones worth doing, and the OpenMP-side items are closed.
+
+**Reverted.** Both the `schedule(dynamic)` and the region-fusion changes were
+neutral (81/82/83 s across all variants, inside run-to-run noise) and are not
+carried. They are described here so they are not re-tried. Note the fusion also
+removed a dead `a = exp(...)` computation in `init_zx_function`.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing

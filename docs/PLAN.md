@@ -151,10 +151,18 @@ The re-profile resets the target list. By cycles: **libm + integer power ~36 %**
       `f2_func` mesh sums) into tables. 8x4 cold on ccc0497: **361 s -> 269 s**,
       deuteron unchanged, `.me3j` identical in all 456 320 elements. Combined
       with the relink that is **2.84x** on this case. See `FINDINGS.md`
-- [ ] **Barriers (~38.9 %, ~32 s — and unmoved by the hoist)** — now the single
-      largest cost in absolute terms and the only item of its size. This is where
-      the farm redesign and the O(sum dim^2) result redistribution pay off.
-      *(The percentage rose only because libm shrank; the seconds did not.)*
+- [x] **OpenMP barrier idle — investigated and CLOSED as Amdahl serial time.**
+      The ~36-39 % of cycles spent in `gomp_barrier_wait` is not imbalanced
+      scheduling: with 1 thread the same phase takes 159 s vs 82 s at 4 threads
+      (**1.94x**, i.e. a ~35 % serial fraction). `MKL_NUM_THREADS=1`,
+      `schedule(dynamic)`, and fusing ~60 regions into 4 all left it unchanged.
+      **Do not retry these**; the OpenMP side has at most ~1.94x available and the
+      idle is not recoverable by tuning. Changes were reverted as neutral.
+- [ ] **Remaining P3 lever: the MPI farm** (now the only item of its size).
+      Threads are capped by Amdahl at ~1.94x, so scaling must come from ranks —
+      consistent with ranks beating threads by 1.15x at constant CPU count.
+      Concretely: subdivide the 32 whole-channel work units, drop the
+      O(sum dim^2) all-to-all redistribution, and give rank 0 work.
 - [ ] GSL Bessel (~11.8 %, ~10 s) — the largest remaining arithmetic item.
       Recursions instead of per-call `gsl_sf_bessel_jl`, plus the per-call `exp`
       /two `log`s in `spherical_bessel`'s threshold (`MyLibrary.F90:1013`), which
