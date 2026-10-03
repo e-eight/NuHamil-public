@@ -3,23 +3,22 @@
 #
 #   make SITE=icc           explicit; a command-line SITE wins over everything
 #   NUHAMIL_SITE=icc make   from the environment
-#   (unset)                 fall back to the hostname detection in the Makefile
+#   (unset)                 fall back to config/detect-site.sh (hostname table)
 #
-# A "site" is just a fragment file, config/sites/<SITE>.mk.  Adding a machine
-# means adding one file here instead of editing the Makefile.  Sites with no
-# fragment (including "other") get the generic gfortran defaults built into
-# the Makefile.
+# A "site" is a fragment file, config/sites/<SITE>.mk.  Adding a machine means
+# adding one file here rather than editing the Makefile.  An unknown SITE warns
+# and falls back to the generic config/sites/other.mk instead of failing
+# silently or building with the wrong toolchain.
 #--------------------------------------------------
 ifeq ($(origin SITE),undefined)
-  SITE := $(if $(NUHAMIL_SITE),$(NUHAMIL_SITE),$(HOST))
+  SITE := $(if $(NUHAMIL_SITE),$(NUHAMIL_SITE),$(shell sh config/detect-site.sh))
 endif
 
-ifeq ($(SITE),other)
-  # no fragment; the Makefile's built-in generic defaults apply
-else ifeq ($(wildcard config/sites/$(SITE).mk),)
-  $(warning No config/sites/$(SITE).mk for SITE=$(SITE); using built-in defaults)
-else
-  include config/sites/$(SITE).mk
+ifeq ($(wildcard config/sites/$(SITE).mk),)
+  $(warning No config/sites/$(SITE).mk for SITE=$(SITE); using config/sites/other.mk)
+  SITE := other
 endif
+
+include config/sites/$(SITE).mk
 
 $(info SITE $(SITE))

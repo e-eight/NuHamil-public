@@ -9,14 +9,6 @@ TARGET=NuHamil
 INSTLDIR=$(HOME)/bin
 EXEDIR=$(PWD)/exe
 MODDIR = mod
-Host= $(shell if hostname|grep -q apt1; then echo apt; \
-  elif hostname|grep -q oak; then echo oak; \
-  elif hostname|grep -q cedar; then echo cedar; \
-  elif hostname|grep -q strongint; then echo strongint; \
-  elif hostname|grep -q juwels; then echo juwels; \
-  elif hostname|grep -q ccc; then echo icc; \
-  else echo other; fi)
-HOST=$(strip $(Host))
 use_mkl=off
 DEBUG_MODE=off
 MPI=off
@@ -27,7 +19,6 @@ ifneq (,$(findstring arwin,$(shell uname)))
   OS = OSX
   arch = $(shell uname -p)
 endif
-$(info HOST $(HOST))
 $(info OS $(OS))
 $(info Debug mode $(DEBUG_MODE))
 BRANCH=$(shell git branch -v | grep '*' | awk '{printf "%s",$$2}')
@@ -45,163 +36,9 @@ DFLAGS=  # debug
 LINT=    # 8-byte integer
 
 #--------------------------------------------------
-# Default Parameters
+# Site selection -- config/sites/<SITE>.mk, chosen by config/site.mk
 #--------------------------------------------------
-ifeq ($(strip $(HOST)),other)
-  FDEP=makedepf90
-  FC=gfortran
-  ifeq ($(MPI), on)
-    FC=mpif90 -DMPI -DSPARC
-  endif
-  LFLAGS+= -I/usr/local/include -L/usr/local/lib #-I/usr/include/hdf5/serial
-  ifeq ($(arch), arm)
-    LFLAGS+= -I/opt/homebrew/include -L/opt/homebrew/lib
-  endif
-  LFLAGS+= -lgsl -lz -lhdf5_fortran -lm -ldl
-  ifeq ($(use_mkl), on)
-    LFLAGS+= -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lpthread
-  else
-    LFLAGS+= -lblas -llapack
-  endif
-  FFLAGS= -O3
-  CFLAGS= -O3
-  FFLAGS+= -fopenmp #-fdec-math
-  FFLAGS+= -DVERSION=\"$(VERSION)\"
-  FLINES = -ffree-line-length-0
-  FCHIRAL = $(FFLAGS)
-  #FFLAGS+= -ff2c # for dot product (LinAlgf90)
-  ifeq ($(DEBUG_MODE),on)
-    DFLAGS+= -pedantic -fbounds-check -O -Wuninitialized -fbacktrace
-    #DFLAGS+=-ffpe-trap=invalid,zero,overflow # Note: gsl larguerre signal
-    ifneq ($(OS), OSX)
-      DFLAGS+= -pg -g
-    endif
-  endif
-  LINT= -fdefault-integer-8
-endif
-
 -include config/site.mk
-
-#--------------------------------------------------
-# Strongint cluster
-#--------------------------------------------------
-ifeq ($(strip $(HOST)),strongint)
-  FC=gfortran
-  LFLAGS+= -lz -lhdf5_fortran -lgsl -lm -ldl -I/$(HOME)/include
-  ifeq ($(use_mkl), on)
-    LFLAGS+= -L/opt/intel/mkl/lib/intel64/ -L/opt/intel/lib/intel64/
-    LFLAGS+= -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lpthread
-  else
-    LFLAGS+= -lblas -llapack
-  endif
-  FFLAGS= -O3
-  FFLAGS+= -fopenmp -fdec-math
-  FFLAGS+= -DVERSION=\"$(VERSION)\"
-  FLINES = -ffree-line-length-0
-  FCHIRAL = $(FFLAGS)
-  LINT= -fdefault-integer-8
-endif
-
-
-#-----------------------------
-# apt1
-#-----------------------------
-ifeq ($(strip $(HOST)),apt)
-  FC=ifort
-  LFLAGS+= -mkl -lgsl -lz
-  FFLAGS=-O3 -heap-arrays -static
-  FFLAGS+= -openmp
-  FFLAGS+= -DVERSION=\"$(VERSION)\"
-  ifeq ($(DEBUG_MODE),on)
-    DFLAGS+=-check all
-  endif
-  LINT= -i8
-endif
-
-#-----------------------------
-# oak (oak.arc.ubc.ca)
-#-----------------------------
-ifeq ($(strip $(HOST)),oak)
-  FC=ifort
-  EXEDIR=/global/scratch/exch/NuHamil/bin
-  LFLAGS+= -mkl -lgsl -lz -lhdf5_fortran
-  FFLAGS=-O3 -heap-arrays
-  FFLAGS+= -qopenmp
-  FFLAGS+= -DVERSION=\"$(VERSION)\"
-  FCHIRAL = $(FFLAGS)
-  FLINES =
-  ifeq ($(DEBUG_MODE),on)
-    DFLAGS+=-check all
-  endif
-  LINT= -i8
-endif
-
-#-----------------------------
-# cedar
-#-----------------------------
-ifeq ($(strip $(HOST)),cedar)
-	# gfortran
-  MPI=on
-  FC=gfortran
-  EXEDIR=/project/6006601/shared/NuHamil/bin
-  ifeq ($(MPI), on)
-    FC=mpifort -DMPI -DSPARC
-  endif
-  LFLAGS+= -I/cvmfs/soft.computecanada.ca/easybuild/software/2020/avx2/Compiler/gcc9/hdf5/1.10.6/include -L$(HOME)/lib
-  LFLAGS+= -lopenblas -llapack -lgsl -lz -lhdf5_fortran
-  FFLAGS=-O3 -fopenmp
-  FFLAGS+= -DVERSION=\"$(VERSION)\"
-  FCHIRAL = -O2
-  FLINES =-ffree-line-length-0
-  ifeq ($(DEBUG_MODE),on)
-    DFLAGS+= -pedantic -fbounds-check -O -Wuninitialized -fbacktrace
-    #FDFLAGS+=-ffpe-trap=invalid,zero,overflow # Note: gsl larguerre signal
-    ifneq ($(OS), OSX)
-      DFLAGS+= -pg -g
-    endif
-  endif
-  LINT= -fdefault-integer-8
-
-	# intel fortran
-  #FC=ifort
-  #EXEDIR=/project/6006601/shared/NuHamil/bin
-  #ifeq ($(MPI), on)
-  #  FC=mpiifort -DMPI
-  #endif
-  #LFLAGS+= -mkl -lgsl -lz -lhdf5_fortran
-  #FFLAGS=-O3 -heap-arrays
-  #FFLAGS+= -qopenmp
-  #FFLAGS+= -DVERSION=\"$(VERSION)\"
-  #FCHIRAL = -O2 -heap-arrays
-  #FLINES =
-  #ifeq ($(DEBUG_MODE),on)
-  #  DFLAGS+=-check all
-  #endif
-  #LINT= -i8
-endif
-
-#-----------------------------
-# juwels
-#-----------------------------
-ifeq ($(strip $(HOST)),juwels)
-  FC=ifort
-  ifeq ($(MPI), on)
-    FC=mpiifort -DMPI
-  endif
-  LFLAGS+= -qmkl -lgsl -lz -lhdf5_fortran
-  FFLAGS=-O3 -heap-arrays
-  FFLAGS+= -qopenmp
-  FFLAGS+= -DVERSION=\"$(VERSION)\"
-  ifeq ($(gauss_laguerre),on)
-    FFLAGS+= -Dgauss_laguerre
-  endif
-  FCHIRAL = -O2 -heap-arrays
-  FLINES =
-  ifeq ($(DEBUG_MODE),on)
-    DFLAGS+=-check all
-  endif
-  LINT= -i8
-endif
 
 ifeq ($(DEBUG_MODE),on)
   #DFLAGS+=-DTwoBodyRelativeChannelDebug
