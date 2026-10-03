@@ -42,6 +42,16 @@ CASE="${1:?usage: run_case.sbatch <case-id>   (see bench/gen_cases.py --list)}"
 
 SCRATCH_ROOT="${NH_SCRATCH_ROOT:-/scratch/soham/NuHamil-faster}"
 REPO="${NH_REPO:-/u/soham/NuHamil-faster/upstream}"
+
+# Refuse a partition that is not on the allow-list.  Defence in depth: the real
+# guard is bench/submit.sh, which catches -p before sbatch is called.
+# shellcheck source=partitions.sh
+. "$REPO/bench/partitions.sh"
+if ! nh_check_partition "${SLURM_JOB_PARTITION:-}"; then
+    echo "ERROR: aborting before doing any work." >&2
+    exit 2
+fi
+
 RUNDIR="${NUHAMIL_RUNDIR:-$SCRATCH_ROOT/runs/$CASE}"
 TAG="${NUHAMIL_TAG:-base}"
 NTASKS="${SLURM_NTASKS:-1}"

@@ -11,7 +11,7 @@ NuHamil generates nucleon–nucleon (NN) and three-nucleon (3N) matrix elements 
 - `src/**/*.inc` — precision templates. Edit the `.inc`, never the `*Single.F90` / `*Double.F90` / `*Half.F90` wrappers, which only `#define PRECISION` and `#include` it.
 - `submodules/{LinAlgf90,NdSpline}/` — git submodules; run `git submodule update --init`.
 - `exe/` — Python drivers that emit namelists. `input_nn_files/` — tracked NN binaries.
-- `bench/` — benchmark harness: `cases.yaml`, `gen_cases.py`, `build_icc.sh`, `run_case.sbatch`, `collect.py`.
+- `bench/` — benchmark harness: `cases.yaml`, `gen_cases.py`, `build_icc.sh`, `run_case.sbatch`, `collect.py`, `submit.sh`.
 
 ## Build, Test, and Development Commands
 
@@ -19,11 +19,18 @@ Build and run **only on cluster compute nodes** — never on login nodes. All ou
 
 Use `scavenger` (pre-emptible; pass `--requeue`) or `IllinoisComputes`. **Do not run builds or sweeps on `ic-express`:** its policy is short interactive/debugging jobs with a 2-hour maximum, and it is a single 48-CPU node, so batch work there blocks the express queue. Slurm advertises `MaxTime=08:00:00` for it and will accept a violating job silently — the enforced limit is not the policy. Check a partition's *published* intended use, not just `scontrol show partition`.
 
+**Submit through `bench/submit.sh`, never `sbatch` directly.** It validates the partition against an allow-list (`bench/partitions.sh`) and refuses before anything is queued. Both `.sbatch` scripts also check `$SLURM_JOB_PARTITION` as defence in depth. `NH_PARTITION_OVERRIDE=1` forces a refusal through with a warning.
+
 ```bash
-sbatch bench/build_icc.sbatch base       # serial+OpenMP and MPI builds -> build/base/
+bench/submit.sh -p scavenger --requeue -J nh-omp8x4 -n 8 -c 4 \
+    --mem=64G --time=08:00:00 bench/run_case.sbatch <case-id>
+```
+
+```bash
+bench/submit.sh -p scavenger --requeue -c 32 bench/build_icc.sbatch base   # builds -> build/base/
 python3 bench/gen_cases.py               # namelists for every case x ramp
 python3 bench/gen_cases.py --list        # expanded case ids
-sbatch bench/run_case.sbatch <case-id>   # one case; serial vs MPI from -n
+bench/submit.sh -p scavenger --requeue -n 16 bench/run_case.sbatch <case-id>
 python3 bench/collect.py                 # logs + profiler -> results.csv/json
 ```
 
