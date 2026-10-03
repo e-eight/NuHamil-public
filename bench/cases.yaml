@@ -89,7 +89,30 @@ cases:
     emax: 8
     e2max: 16
     e3max: 6
-    reference: {}
+    reference:
+      # The .me3j product is ASCII text and is NOT bit-reproducible across
+      # configurations -- threading and rank changes reorder summations, so the
+      # same binary at 32 ranks x 1 thread and 8 ranks x 4 threads differs in ~3%
+      # of bytes.  Correctness is therefore a TOLERANCE check, not a hash, which
+      # is what bench/accept.py implements.  Pass criterion, elementwise:
+      #     |candidate - golden| <= atol + rtol * |golden|
+      # atol carries the weight: the data contains many near-zero elements whose
+      # relative differences are meaningless.
+      #
+      # Defaults are set from measurement, not guesswork.
+      # Worst deviation measured so far is 5.2e-06 (the single-worker configs
+      # 2x16/1x32), so atol=1e-4 leaves a ~19x margin: a legitimate rebuild or
+      # reconfiguration passes while a real regression fails.  See the docstring
+      # of bench/accept.py for the full measured table.
+      #
+      # NOTE: only the rampsmall ramp has a harvested golden product (e3max 6-10
+      # in golden/me3j/rampsmall/).  The ramplarge products were never captured,
+      # so ramplarge runs currently have no product acceptance check.
+      product:
+        golden: golden/me3j/rampsmall/ThBME_srg2.0_ramp20-5-18-7-16_N3LO_EM500_c1_-0.81_c3_-3.2_c4_5.4_cD_0.7_cE_-0.06_LNL2_650_500_IS_hw16from30_ms8_16_6.me3j.gz
+        ramps: [rampsmall]
+        atol: 1.0e-4
+        rtol: 1.0e-4
 
   - id: 3bme_e3max8
     tier: medium

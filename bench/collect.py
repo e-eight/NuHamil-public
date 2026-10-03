@@ -235,7 +235,84 @@ def elapsed_to_s(txt):
 
 
 # ---------------------------------------------------------------------------
-def collect_run(env_path, do_sacct=True):
+def load_product_refs():
+    """base case id -> product reference, from bench/cases.yaml.
+
+    Read from the spec rather than the per-run manifest so that adding a
+    reference does not require regenerating existing run directories.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return {}
+    spec_path = Path(__file__).resolve().parent / "cases.yaml"
+    if not spec_path.is_file():
+        return {}
+    try:
+        spec = yaml.safe_load(spec_path.read_text()) or {}
+    except Exception:
+        return {}
+    out = {}
+    for case in spec.get("cases", []):
+        ref = (case.get("reference") or {}).get("product")
+        if ref and ref.get("golden"):
+            out[case["id"]] = ref
+    return out
+
+
+def product_check(rec, refs):
+    """Tolerance-compare the run's .me3j against the golden product.
+
+    .me3j is ASCII text and is NOT bit-reproducible across configurations, so
+    this is a numeric tolerance check (see bench/accept.py), never a hash: a
+    hash would flag every legitimate reconfiguration as a failure.
+    """
+    cid = rec.get("case") or ""
+    base, _, ramp = cid.partition("__")
+    ref = refs.get(base)
+    if not ref:
+        return {}
+
+    if ramp and ref.get("ramps") and ramp not in ref["ramps"]:
+        return {"accept": "no-reference",
+                "accept_note": "no golden product for ramp '%s'" % ramp}
+
+    rundir = Path(rec["run_dir"])
+    prods = sorted(list(rundir.glob("*.me3j.gz")) + list(rundir.glob("*.me3j")))
+    if not prods:
+        return {"accept": "no-product"}
+
+    golden = rundir.parent.parent / ref["golden"]
+    if not golden.is_file():
+        return {"accept": "no-golden", "accept_note": str(golden)}
+    try:
+        import accept
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import accept
+
+    try:
+        rv, _ = accept.load(str(golden))
+        cv, _ = accept.load(str(prods[0]))
+        res = accept.compare(rv, cv, ref.get("atol", accept.DEFAULT_ATOL),
+                             ref.get("rtol", accept.DEFAULT_RTOL))
+    except Exception as exc:                       # noqa: BLE001
+        return {"accept": "error", "accept_note": "%s: %s" % (type(exc).__name__, exc)}
+
+    if "count_mismatch" in res:
+        return {"accept": "fail", "accept_golden": ref["golden"],
+                "accept_note": "element count mismatch %s" % (res["count_mismatch"],)}
+
+    return {
+        "accept": "pass" if res["nbad"] == 0 else "fail",
+        "accept_maxabs": res["maxabs"],
+        "accept_nbad": res["nbad"],
+        "accept_n": res["n"],
+        "accept_golden": ref["golden"],
+    }
+
+
+def collect_run(env_path, do_sacct=True, product_refs=None):
     meta = read_env(env_path)
     rdir = env_path.parent
     rec = dict(meta)
@@ -322,6 +399,10 @@ def collect_run(env_path, do_sacct=True):
             rec["output_bytes"] = op.stat().st_size
             rec["output_sha256"] = sha256_of(op)
 
+    # numeric acceptance against the golden product (tolerance, not hash)
+    if product_refs:
+        rec.update(product_check(rec, product_refs))
+
     tv = parse_time_v(text)
     if tv is not None:
         rec["time_v_maxrss_kb"] = tv
@@ -374,6 +455,7 @@ CSV_COLS = [
     "rank0_top_cat", "rank0_top_cat_s",
     "energy_MeV", "energy_ref_MeV", "energy_ok",
     "output_file", "output_exists", "output_bytes", "output_sha256",
+    "accept", "accept_maxabs", "accept_nbad", "accept_n", "accept_note",
     "n_ranks_reported", "run_dir", "log",
 ]
 
@@ -410,7 +492,8 @@ def main():
     # Always collect and persist EVERY run.  --cases narrows only the printed
     # table: filtering the output too would let a narrow query silently discard
     # the other cases from results.csv/json.
-    recs = [collect_run(e, do_sacct=not args.no_sacct) for e in envs]
+    product_refs = load_product_refs()
+    recs = [collect_run(e, do_sacct=not args.no_sacct, product_refs=product_refs) for e in envs]
     recs = add_scaling(recs)
     recs.sort(key=lambda r: (r.get("case") or "", r.get("total_threads") or 0,
                              r.get("jobid") or ""))
