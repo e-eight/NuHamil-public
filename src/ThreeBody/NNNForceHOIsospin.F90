@@ -301,7 +301,7 @@ contains
     type(InputParameters), intent(in) :: params
     logical, intent(in), optional :: verbose
     type(DMat) :: cfp, work
-    real(8), allocatable :: Radial(:,:,:), p(:), pw(:)
+    real(8), allocatable :: Radial(:,:,:), p(:), pw(:), Wexp(:,:)
     real(8) :: time
     integer :: north, nphys
     real(8) :: pmin = 0.d0, pmax
@@ -319,8 +319,10 @@ contains
     allocate(p(NMesh), pw(NMesh))
     call gauss_legendre(pmin,pmax,p,pw,Nmesh)
     call store_radial_wf()
+    call build_regulator_exp()
     work = non_local_regulator_ho_mat()
     call release_radial_wf()
+    deallocate(Wexp)
     deallocate(p, pw)
 
     work = cfp%T() * work * cfp
@@ -369,24 +371,41 @@ contains
       !$omp end parallel
     end function non_local_regulator_ho_mat
 
+    subroutine build_regulator_exp()
+      ! The regulator exponential depends only on the two *momentum-mesh*
+      ! indices -- not on any of the six quantum numbers -- yet it used to be
+      ! evaluated inside the innermost loop of non_local_regulator, which runs
+      ! (NMesh x NMesh) times for *every* (ibra,iket) matrix element.  That made
+      ! `exp` and the `**RegulatorPower` call (__powidf2) two of the largest
+      ! costs in the whole profile.  Evaluate it once per channel instead; the
+      ! expression is copied verbatim and the inner loop keeps the original
+      ! multiply order, so the arithmetic is unchanged.
+      use MyLibrary, only: hc
+      integer :: i, k
+
+      allocate(Wexp(size(p), size(p)))
+      do k = 1, size(p)
+        do i = 1, size(p)
+          Wexp(i,k) = exp( - ( 0.5d0 * (p(i)**2 + p(k)**2) * hc**2 &
+              &  / params%lambda_3nf_nonlocal**2 )**params%RegulatorPower )
+        end do
+      end do
+    end subroutine build_regulator_exp
+
     function non_local_regulator(n12, n45, LL, n3, n6, l) result(f)
       ! < n12 LL n3 l | F | n45 LL n6 l >, F is non-local regulator.
-      use MyLibrary, only: hc
       integer, intent(in) :: n12, n45, LL, n3, n6, l
-      real(8) :: f, ex
+      real(8) :: f
       integer :: i, k
-      real(8) :: pi, pk, wi, wk
+      real(8) :: wi, wk
 
       f = 0.d0
       do i = 1, size(p)
-        pi = p(i)
         wi = pw(i)
         do k = 1, size(p)
-          pk = p(k)
           wk = pw(k)
-          ex = - ( 0.5d0 * (pi**2 + pk**2) * hc**2 / params%lambda_3nf_nonlocal**2 )**params%RegulatorPower
           f = f + wi * wk * Radial(i,n12,LL) * Radial(k,n3,l) * &
-              &   exp(ex) * Radial(i,n45,LL) * Radial(k,n6,l)
+              &   Wexp(i,k) * Radial(i,n45,LL) * Radial(k,n6,l)
         end do
       end do
     end function non_local_regulator

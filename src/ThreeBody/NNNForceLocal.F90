@@ -84,6 +84,18 @@ module NNNForceLocal
   real(8) :: pmin = 0.d0, pmax = 8.d0
   real(8), allocatable :: p_mesh(:), pw_mesh(:)
 
+  ! Mesh-index tables hoisted out of the inner loops of init_z0/zx/fk/fkx and
+  ! f1_func/f2_func.  Every factor below depends only on the p-mesh index, but
+  ! each was previously re-evaluated for every (r or x, j) pair -- millions of
+  ! redundant exp/pow calls.  Built once per run by init_p_mesh_tables(); the
+  ! expressions are copied verbatim from the loops they replace, so the values
+  ! are unchanged.  See docs/FINDINGS.md "Where the ~36 % lives".
+  real(8), allocatable :: pm_lr(:)     ! local_regulator(p*hc, lambda, power)
+  real(8), allocatable :: pm_den(:)    ! p**2 + (m_pi/hc)**2
+  real(8), allocatable :: pm_w2(:)     ! pw_mesh * p**2
+  real(8), allocatable :: pm_w3(:)     ! pw_mesh * p**3
+  real(8), allocatable :: pm_w4(:)     ! pw_mesh * p**4
+
   integer :: NMesh_cos = 80
   real(8), allocatable :: cos_mesh(:), cosw_mesh(:)
 contains
@@ -1361,6 +1373,7 @@ contains
 
     call gauss_legendre(pmin, pmax, p_mesh, pw_mesh, NMesh_p)
     call gauss_legendre(-1.d0, 1.d0, cos_mesh, cosw_mesh, NMesh_cos)
+    call init_p_mesh_tables(lambda, power)
     call init_z0_function(lambda, power)
     call init_zx_function(lambda, power, xis, Nmax+2)
     call init_fk_function(lambda, power)
@@ -1371,6 +1384,9 @@ contains
   subroutine release_arrays(ms)
     type(ModelSpace), intent(in) :: ms
     integer :: L, k
+    if(allocated(pm_lr)) then
+      deallocate(pm_lr, pm_den, pm_w2, pm_w3, pm_w4)
+    end if
     call CGs%fin()
     call lsj12%fin()
     call lsj3%fin()
@@ -1399,6 +1415,34 @@ contains
 
   end subroutine release_arrays
 
+  subroutine init_p_mesh_tables(lambda, power)
+    ! Precompute the p-mesh factors used by every z0/zx/fk/fkx and f1/f2 sum.
+    ! Each of them is a pure function of the mesh index, so building them once
+    ! removes the exp/pow calls from the inner loops.  The expressions are
+    ! copied verbatim from those loops: same values, same multiply order.
+    use MyLibrary, only: hc, m_pi
+    real(8), intent(in) :: lambda
+    integer, intent(in) :: power
+    real(8) :: mpi, p, w
+    integer :: j
+
+    if(allocated(pm_lr)) then
+      deallocate(pm_lr, pm_den, pm_w2, pm_w3, pm_w4)
+    end if
+    allocate(pm_lr(NMesh_p), pm_den(NMesh_p))
+    allocate(pm_w2(NMesh_p), pm_w3(NMesh_p), pm_w4(NMesh_p))
+    mpi = m_pi / hc
+    do j = 1, NMesh_p
+      p = p_mesh(j)
+      w = pw_mesh(j)
+      pm_lr(j)  = local_regulator(p*hc, lambda, power)
+      pm_den(j) = p**2 + mpi**2
+      pm_w2(j)  = w * p**2
+      pm_w3(j)  = w * p**3
+      pm_w4(j)  = w * p**4
+    end do
+  end subroutine init_p_mesh_tables
+
   subroutine init_z0_function(lambda,power)
     !
     ! For details, see Eq. (13) in P. Navrátil, Few-Body Syst. 41, 117 (2007).
@@ -1407,18 +1451,17 @@ contains
     real(8), intent(in) :: lambda
     integer, intent(in) :: power
     integer :: i, j
-    real(8) :: s, r, p, w
+    real(8) :: s, r, p
     allocate(z0%v(NMesh_r))
     z0%v(:) = 0.d0
     !$omp parallel
-    !$omp do private(i, r, s, j, p, w)
+    !$omp do private(i, r, s, j, p)
     do i = 1, NMesh_r
       r = r_mesh(i) * sqrt(2.d0)
       s = 0.d0
       do j = 1, NMesh_p
         p = p_mesh(j)
-        w = pw_mesh(j)
-        s = s + w * p**2 * spherical_bessel(0, p*r) * local_regulator(p*hc, lambda, power)
+        s = s + pm_w2(j) * spherical_bessel(0, p*r) * pm_lr(j)
       end do
       z0%v(i) = s / (2.d0 * pi**2)
     end do
@@ -1435,7 +1478,7 @@ contains
     integer, intent(in) :: power, L
     type(Coordinates), intent(in) :: xis(:)
     integer :: i, j, x
-    real(8) :: s, r1, r2, p, w, a
+    real(8) :: s, r1, r2, p, a
 
     allocate(zx(0:L))
     do x = 0, L
@@ -1444,7 +1487,7 @@ contains
       a = exp(-200.d0 / dble(x) * log(10.d0) + dble(2*x+1)/dble(x) * log(dble(2*x+1)) - &
           & dble(2*x+1)/dble(x) - log(dble(x)) + 1 - log(2.d0) )
       !$omp parallel
-      !$omp do private(i, r1, r2, s, j, p, w)
+      !$omp do private(i, r1, r2, s, j, p)
       do i = 1, size(xis)
         r1 = xis(i)%x1 / sqrt(2.d0)
         r2 = xis(i)%x2 * sqrt(1.5d0)
@@ -1452,10 +1495,9 @@ contains
         s = 0.d0
         do j = 1, NMesh_p
           p = p_mesh(j)
-          w = pw_mesh(j)
           if( x > 42 .and. (r1*p < 1.d-4 .or. r2*p < 1.d-4) ) cycle
-          s = s + w * p**2 * spherical_bessel(x, r1*p) * spherical_bessel(x, r2*p) * &
-              & local_regulator(p*hc, lambda, power)
+          s = s + pm_w2(j) * spherical_bessel(x, r1*p) * spherical_bessel(x, r2*p) * &
+              & pm_lr(j)
         end do
         zx(x)%v(i) = s / (2.d0 * pi**2)
       end do
@@ -1469,29 +1511,32 @@ contains
     !
     ! For details, see Eq. (39) in P. Navrátil, Few-Body Syst. 41, 117 (2007).
     !
-    use MyLibrary, only: spherical_bessel, pi, hc, m_pi
+    use MyLibrary, only: spherical_bessel, pi
     real(8), intent(in) :: lambda
     integer, intent(in) :: power
     integer :: i, j, k, kk
-    real(8) :: s, r, p, w, mpi
-    mpi = m_pi / hc
+    real(8) :: s, r, p
+    real(8), allocatable :: wp(:)
     allocate(fk(0:2))
     kk = 0
     do k = 0, 2
       if(k==0 .or. k==2) kk = 4
       if(k==1) kk = 3
+      if(kk == 3) then
+        wp = pm_w3
+      else
+        wp = pm_w4
+      end if
       allocate(fk(k)%v(NMesh_r))
       fk(k)%v(:) = 0.d0
       !$omp parallel
-      !$omp do private(i, r, s, j, p, w)
+      !$omp do private(i, r, s, j, p)
       do i = 1, NMesh_r
         r = r_mesh(i) * sqrt(2.d0)
         s = 0.d0
         do j = 1, NMesh_p
           p = p_mesh(j)
-          w = pw_mesh(j)
-          s = s + w * p**kk * spherical_bessel(k, p*r) * &
-              & local_regulator(p*hc, lambda, power) / (p**2 + mpi**2)
+          s = s + wp(j) * spherical_bessel(k, p*r) * pm_lr(j) / pm_den(j)
         end do
         fk(k)%v(i) = s / (2.d0 * pi**2)
       end do
@@ -1509,9 +1554,8 @@ contains
     integer, intent(in) :: power, L
     type(Coordinates), intent(in) :: xis(:)
     integer :: i, j, x
-    real(8) :: s, r1, r2, r, p, w, costh, wcosth, mpi
+    real(8) :: s, r1, r2, r, p, costh, wcosth
 
-    mpi = m_pi / hc
     allocate(fkx(0:2,0:L))
 
     ! k = 0
@@ -1520,7 +1564,7 @@ contains
       fkx(0,x)%v(:) = 0.d0
 
       !$omp parallel
-      !$omp do private(i, r1, r2, s, j, p, w)
+      !$omp do private(i, r1, r2, s, j, p)
       do i = 1, size(xis)
         r1 = xis(i)%x1 / sqrt(2.d0)
         r2 = xis(i)%x2 * sqrt(1.5d0)
@@ -1528,10 +1572,8 @@ contains
         s = 0.d0
         do j = 1, NMesh_p
           p = p_mesh(j)
-          w = pw_mesh(j)
-          s = s + w * p**4 * spherical_bessel(x, p*r1) * &
-              & spherical_bessel(x, p*r2) * &
-              & local_regulator(p*hc, lambda, power) / (p**2 + mpi**2)
+          s = s + pm_w4(j) * spherical_bessel(x, p*r1) * &
+              & spherical_bessel(x, p*r2) * pm_lr(j) / pm_den(j)
         end do
         fkx(0,x)%v(i) = s / (2.d0 * pi**2)
       end do
@@ -1555,7 +1597,7 @@ contains
           costh = cos_Mesh(j)
           wcosth = cosw_Mesh(j)
           r = sqrt(r1**2 + r2**2 - 2.d0*r1*r2*costh)
-          s = s + wcosth * legendre_polynomial(x,costh) * f1_func(r, lambda, power) / r
+          s = s + wcosth * legendre_polynomial(x,costh) * f1_func(r) / r
         end do
         fkx(1,x)%v(i) = s * 0.5d0
       end do
@@ -1579,7 +1621,7 @@ contains
           costh = cos_Mesh(j)
           wcosth = cosw_Mesh(j)
           r = sqrt(r1**2 + r2**2 - 2.d0*r1*r2*costh)
-          s = s + wcosth * legendre_polynomial(x,costh) * f2_func(r, lambda, power) / r**2
+          s = s + wcosth * legendre_polynomial(x,costh) * f2_func(r) / r**2
         end do
         fkx(2,x)%v(i) = s * 0.5d0
       end do
@@ -1597,40 +1639,36 @@ contains
     f = exp( - x**2 )
   end function local_regulator
 
-  function f1_func(r, lambda, n) result(f)
-    use MyLibrary, only: spherical_bessel, pi, hc, m_pi
-    real(8), intent(in) :: r, lambda
-    integer, intent(in) :: n
+  function f1_func(r) result(f)
+    ! r is now the only per-call input: the mesh factor
+    ! pm_w3 * pm_lr / pm_den is precomputed by init_p_mesh_tables.  (lambda and
+    ! power were constant for the whole run, which is what made the hoist legal.)
+    use MyLibrary, only: spherical_bessel, pi
+    real(8), intent(in) :: r
     real(8) :: f
-    real(8) :: p, w, mpi
+    real(8) :: p
     integer :: i
 
-    mpi = m_pi / hc
     f = 0.d0
     do i = 1, NMesh_p
       p = p_mesh(i)
-      w = pw_mesh(i)
-      f = f + w * p**3 * spherical_bessel(1, r*p) * &
-          & local_regulator(p*hc, lambda, n) / (p**2 + mpi**2)
+      f = f + pm_w3(i) * spherical_bessel(1, r*p) * pm_lr(i) / pm_den(i)
     end do
     f = f / (2.d0 * pi**2)
   end function f1_func
 
-  function f2_func(r, lambda, n) result(f)
-    use MyLibrary, only: spherical_bessel, pi, hc, m_pi
-    real(8), intent(in) :: r, lambda
-    integer, intent(in) :: n
+  function f2_func(r) result(f)
+    ! see f1_func
+    use MyLibrary, only: spherical_bessel, pi
+    real(8), intent(in) :: r
     real(8) :: f
-    real(8) :: p, w, mpi
+    real(8) :: p
     integer :: i
 
-    mpi = m_pi / hc
     f = 0.d0
     do i = 1, NMesh_p
       p = p_mesh(i)
-      w = pw_mesh(i)
-      f = f + w * p**4 * spherical_bessel(2, r*p) * &
-          & local_regulator(p*hc, lambda, n) / (p**2 + mpi**2)
+      f = f + pm_w4(i) * spherical_bessel(2, r*p) * pm_lr(i) / pm_den(i)
     end do
     f = f / (2.d0 * pi**2)
   end function f2_func
