@@ -25,7 +25,14 @@ Keep this file free of transient status; that belongs in [`PLAN.md`](PLAN.md).
   the runtime from the OS (`libhdf5_fortran.so.200 -> /lib64/…`). There is no
   `hdf5`, `lapack` or `openblas` module, and `/sw/apps/hdf5` contains only
   `src`/`test` (unbuilt). HDF5 is used by exactly one file, `src/ThreeBody/NNNFFromFile.F90`.
-- **[measured]** `-fdefault-integer-8` is mandatory; LAPACK/BLAS must match ILP64.
+- **[measured, corrected 2026-10-03]** `-fdefault-integer-8` is mandatory **for the
+  program**, but the **BLAS/LAPACK interface is LP64 (32-bit), not ILP64**. An
+  earlier version of this line said "LAPACK/BLAS must match ILP64" and that is
+  wrong — it cost a build and a debugging cycle. Evidence: `Renormalization.F90:45`
+  declares `integer(4) :: n` for its `dgemm` arguments, and the cluster's
+  `librefblas.a` reads each integer argument with `mov (%rax),%eax`, a 32-bit load.
+  Linking ILP64 MKL makes it read 8-byte dimensions from 4-byte arguments and the
+  binary segfaults (exit 139) with no output.
 - **[measured]** The ICC build always emits `-ffree-line-length-0` (GCC >= 13 errors
   on the legacy >132-column lines).
 - **[measured]** `make install` symlinks into `$HOME/bin`. Override `INSTLDIR=`.
@@ -232,7 +239,12 @@ with 4 threads, **6.5 M samples**:
 - **[measured]** **The single largest cost is `dgemm` at 40 %**, and it is Netlib
   *reference* BLAS: `nm` shows `dgemm_` as `T` (defined in the binary) because
   `/sw/apps/lapack/3.12.1/lib` holds only static `liblapack.a` / `librefblas.a`.
-  Tuned ILP64 alternatives are installed (MKL 2025 `libmkl_*_ilp64`, AOCL 5.0).
+  Tuned alternatives are installed (MKL 2025, AOCL 5.0). Use MKL's **`lp64`**
+  interface, not `ilp64` — see the corrected note under "Build system". Note also
+  that the 3-body `sgemm` call sites pass plain `integer` (8 bytes under
+  `-fdefault-integer-8`) while `Renormalization.F90` passes `integer(4)`; the
+  working build satisfies both, so the mixture deserves care if the BLAS is
+  swapped again.
 - **[measured]** **Threads spend 25 % of cycles waiting at OpenMP barriers.** That
   is the missing explanation for the ~3.3x thread ceiling: it is not a serial
   fraction in the physics, it is synchronisation overhead. Implies the parallel
