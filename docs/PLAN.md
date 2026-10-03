@@ -78,8 +78,10 @@ breaking the existing working build:
 - [x] **A.3** `.gitignore` for `obj/`, `mod/`, `exe/*.exe`, `__pycache__/`
 - [x] **A.4** Inert-refactor proof: 132 compile commands identical, both binaries
       bit-identical (`ad7fe067…`), deuteron result unchanged
-- [ ] **A.5** Convert the remaining host blocks (`other`/`strongint`/`apt`/`oak`/
-      `cedar`/`juwels`) to fragments and delete the `hostname` sniffing
+- [x] **A.5** All six remaining host blocks converted to fragments; the hostname
+      table now lives in `config/detect-site.sh` and the Makefile has **no hostname
+      reference at all** (472 -> 309 lines). Verified inert again: 132 commands and
+      both binaries identical
 - [ ] **A.6** Compiler-family fragments (`gnu`/`intel`/`aocc`/`nvhpc`) replacing the
       `findstring $(FC)` string-matching for `MODOUT`/`FLINES`/`LINT`
 - [ ] **A.7** Dependency probing (`makedepf90` is absent on ICC); optional HDF5

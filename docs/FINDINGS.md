@@ -169,6 +169,15 @@ Same case, same binary, only the rank count differs:
 - **[measured]** `IllinoisComputes`: 22 nodes x 128 cores, 512 GB, 3.8 GB/core,
   3-day limit. **Badly contended** — 473 jobs pending when observed, so short jobs
   should go to `scavenger`, which started a 32-CPU job in ~25 s.
+- **[measured]** **Partition choice matters more than expected.** On 2026-10-02
+  evening `scavenger` held four jobs at `(Priority)` for 20+ minutes despite an idle
+  node, while the same 32-CPU build submitted to **`ic-express` ran in 74 s**. Use
+  `ic-express` for short jobs and builds; keep long sweeps on one partition so that
+  run-to-run comparisons are not confounded by node/partition differences (a +10 %
+  spread has already been observed between identical configurations).
+- **[measured]** `scavenger` timelimit is 1 day; `secondary` is 4 h, which is too
+  short for the OpenMP sweep's worst case (a 1-rank run that gets no threading help
+  is ~4.3 h).
 - **[measured]** `IllinoisComputes-GPU`: 4 x A100-80GB (sm_80, 128 cores, EPYC 7763)
   + 1 x H200-8GPU (sm_90, 64 cores, Emerald Rapids); 3-day limit.
 - **[measured]** Modules: gcc 12.4/13.3, openmpi 5.0.1, gsl 2.8, cuda 12.4/12.6/12.8,
