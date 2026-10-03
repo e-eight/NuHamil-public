@@ -48,6 +48,7 @@ breaking the existing working build:
 | GPU entry point | Time-boxed compiler bake-off before committing to any path |
 | Parallelization scope | 3-body lab-frame only (the only mode MPI supports, and the dominant cost) |
 | PR to open | After Phase 2, so the temporary ICC Makefile block is gone |
+| Benchmark comparison | Pair configurations on one node (`--nodelist`), or repeat across nodes: `scavenger` is heterogeneous and one node is up to 1.67x faster |
 
 ## Phases
 
@@ -68,9 +69,16 @@ breaking the existing working build:
   - [x] First MPI rank sweep (e3max6 rampsmall): 8 ranks 1947 s, 32 ranks 2294 s
         — **negative scaling**, see `FINDINGS.md`
   - [x] Cold-start guarantee — warm re-runs were measuring cache reads, not compute
-  - [ ] Repeat runs to bound run-to-run spread (+10 % observed between identical
-        configurations) before quoting small deltas
-  - [ ] OpenMP sweep, and 2-node MPI
+  - [x] Run-to-run spread explained: **same-node repeats agree to ~2 %; the
+        larger spread is node heterogeneity** (up to 1.67x, Intel vs AMD) — see
+        `FINDINGS.md`
+  - [x] OpenMP sweep at constant 32 CPUs (rampsmall e3max6): **8x4 784 s** best;
+        1x32 4185, 2x16 4267, 16x2 1799, 32x1 2294 — see `FINDINGS.md`
+  - [x] Tuned-BLAS A/B (MKL LP64 vs Netlib reference, 8x4, link-line only):
+        **1.98x** paired on one node, numerics PASS — see `FINDINGS.md`
+  - [ ] **Re-measure the MPI rank sweep with both points on ONE node** — the
+        8x1/32x1 pair was Intel vs AMD, so the 0.85x figure is confounded
+  - [ ] 2-node MPI
 - *Exit:* reproducible numbers, serial-vs-MPI curve, "where the time goes"
 
 ### P2 — Portable, non-rigid build
@@ -95,6 +103,11 @@ breaking the existing working build:
       `make print-config` / `check-deps`
 - [ ] **Track B** thin CMake + `CMakePresets.json` (carrier for GPU targets later)
 - [ ] Validate a second toolchain: AOCC/flang + AOCL (already installed)
+- [x] Tuned-BLAS site fragment `config/sites/icc-mkl.mk` — a link-line-only
+      variant of `icc.mk` using MKL **LP64**; measured **1.98x** on rampsmall 8x4
+      with numerics PASS (see `FINDINGS.md`). Decide later whether it becomes the
+      ICC default or stays an opt-in.  *(Not yet in the Makefile's default; not
+      wired into `bench/build_icc.sh` as a tag.)*
 - *Exit:* clean-checkout build on ICC + one other toolchain, comparable to golden
 
 Each step is rebuilt on `scavenger` (57 s) and re-checked against the deuteron

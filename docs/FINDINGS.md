@@ -127,6 +127,10 @@ Same case, same binary, only the rank count differs:
   32 ranks took 34:55 with the frozen binary on other nodes vs 38:25 here (+10 %).
   Causes not yet separated (scavenger node contention vs per-rank profiling
   overhead). **Repeat runs are needed before quoting small deltas.**
+  **Update 2026-10-03: the cause is very likely node heterogeneity — the 8x1 and
+  32x1 points above ran on different CPU vendors (Intel vs AMD). The negative
+  scaling is therefore confounded and must be re-measured on one node. See
+  "Benchmark methodology".**
 
 ## OpenMP works, and it is where the speed is — measured 2026-10-02
 
@@ -146,6 +150,10 @@ First thread measurement in the project. rampsmall e3max6, constant 32 CPUs:
 - **[inferred]** This also reframes the negative-scaling result: 32 ranks x 1 thread
   is the *worst* use of 32 CPUs here. The GPUs/threads argument is not "use fewer
   ranks" but "give each rank threads".
+- **[measured, caveat]** These points span nodes (8x4 on ccc0499, 16x2/32x1 on
+  ccc0258, 2x16 on ccc0496, 1x32 on ccc0498 — see "Benchmark methodology"). The
+  ~5x gap between 8x4 and 1x32 is far larger than the ~1.7x node effect, so the
+  conclusion holds; the ordering of adjacent points does not.
 
 ### Threading does not preserve bit-identical output (and neither does MPI)
 
@@ -263,9 +271,85 @@ with 4 threads, **6.5 M samples**:
    source edits, and `bench/accept.py` verifies the numerics. This *should precede*
    both the P3 threading work and the P4 GPU port — a GPU port would spend its
    effort accelerating exactly this `dgemm`, which a library swap may largely fix.
+   **Done and measured: MKL LP64 gives 1.98x, paired on one node — see the
+   "Tuned BLAS relink" section. This also caps the P4 GPU prize: a GPU port would
+   now be chasing a much smaller `dgemm` share.**
 2. **Then attack the 25 % barrier time** — that is the real P3 target, and it is a
    scheduling/parallel-structure problem, not an arithmetic one.
 3. GSL Bessel (~3.3 %) is a smaller, independent candidate.
+
+## Tuned BLAS relink: MKL LP64 is ~2.0x — measured 2026-10-03
+
+The profile above made relinking a tuned BLAS the top priority. It was tested as
+a **pure link-line change**: `config/sites/icc-mkl.mk` is `icc.mk` with
+`-llapack -lrefblas` replaced by MKL LP64. No source file and no FFLAGS change —
+`diff config/sites/icc.mk config/sites/icc-mkl.mk` shows only LFLAGS. LP64 is
+required; ILP64 segfaults (see "Build system").
+
+rampsmall e3max6, 8 ranks x 4 threads, cold start, checked against the golden
+`.me3j` with `bench/accept.py`:
+
+| job | node | CPU | BLAS | wall | three-body force | accept |
+| --- | --- | --- | --- | --- | --- | --- |
+| 11118101 | ccc0499 | AMD EPYC | reference | 784 s | — | pass, 1.61e-06 |
+| 11138828 | ccc0499 | AMD EPYC | reference | 768 s | 748.1 s | pass, 1.61e-06 |
+| 11125083 | ccc0386 | Intel G8358 | **MKL LP64** | 654 s | — | pass, 2.17e-06 |
+| 11138827 | ccc0499 | AMD EPYC | **MKL LP64** | **391 s** | 387.9 s | pass, 2.20e-06 |
+
+- **[measured] Paired on one node (ccc0499), MKL LP64 is 1.98x**: 776 s (mean of
+  784/768) -> 391 s. The two reference-BLAS runs agree to 2.1 %, so this is a
+  real effect, not run-to-run noise.
+- **[measured] Numerics PASS everywhere.** MKL moves the worst element from
+  1.61e-06 to ~2.2e-06 absolute, well inside the 5.2e-06 noise floor and the
+  1e-4 acceptance tolerance. The two reference-BLAS runs are *bit-identical* in
+  that metric (1.61e-06 both), i.e. the code is deterministic; MKL's shift is a
+  reordered summation, as expected. The change is a link-only A/B, so this is
+  the cleanest correctness signal in the project so far.
+- **[inferred] The 1.98x exceeds the naive Amdahl bound from the 40 % `dgemm`
+  share** (which allows only 1.67x). Either the perf profile undercounted
+  `dgemm` (it was taken on the serial path, 4 threads, on an Intel node with
+  reference BLAS) or reference BLAS is relatively worse on EPYC. The direction
+  is unambiguous though: **40 % of cycles in reference `dgemm` understated what
+  a tuned BLAS buys.** Worth a re-profile on the paired node.
+- **[measured] This supersedes the earlier 1.20x reading** of the same
+  experiment (654 s vs 784 s) — that compared an Intel node against an AMD node.
+  See node heterogeneity, below.
+
+## Benchmark methodology: scavenger node heterogeneity is a first-order confound — 2026-10-03
+
+`scavenger` is heterogeneous and the harness compares runs made on whatever node
+the scheduler picked. Two runs of the *same binary* at the same configuration
+show how large that is:
+
+- MKL LP64, 8x4: **654 s on ccc0386 (Intel Xeon Platinum 8358)** vs **391 s on
+  ccc0499 (AMD EPYC)** — a **1.67x** node effect, same binary, same input.
+- Two reference-BLAS 8x4 runs, both on ccc0499: 784 s and 768 s — **2.1 %**
+  spread.
+
+So repeat-to-repeat noise on one node is ~2 %, while the node changes the wall
+by up to 67 %. **Any comparison drawn across nodes is uninterpretable below
+~2x.**
+
+- **[measured]** Node families in these runs: ccc0386 = Intel Xeon Platinum 8358
+  (32 cores/socket, 64 CPUs); ccc0258 = AMD EPYC **7702** (256 GB); ccc0496/498/499
+  = AMD EPYC (128 CPUs) with RTX 6000 GPUs. "AMD" is not one machine — AE7702
+  (Zen2, 2.0 GHz) is a different generation from the ccc049x nodes.
+- **[measured, caveat] The MPI negative-scaling result is confounded.** The 8x1
+  point (1947 s) ran on **ccc0386 (Intel)** and the 32x1 point (2294 s) on
+  **ccc0258 (AMD EPYC 7702)** — different vendors. The 0.85x "more ranks is
+  slower" figure therefore entangles rank count with node speed and **must be
+  re-measured with both points on one node** before it is quoted. The *source*
+  argument (one channel per rank at 32 ranks leaves the scheduler no slack) still
+  stands on its own; the wall-time evidence for it does not.
+- **[measured]** The OpenMP sweep's points also span nodes: 1x32 ccc0498, 2x16
+  ccc0496, 8x4 ccc0499 (all AMD EPYC); 16x2 and 32x1 ccc0258 (EPYC 7702). The
+  trend (8x4 best by ~5x) is far larger than any node effect, so the conclusion
+  survives, but the fine ordering between adjacent points does not, and the
+  "+10 % run-to-run spread" recorded earlier is most likely this node effect.
+- **[recommendation]** Pin comparisons to one node (`--nodelist`), or run each
+  configuration on >= 2 nodes and report per-node, before quoting any delta
+  below ~2x. The harness already records `nodelist` in `run-*.env`; the gap is
+  in how comparisons are drawn, not in what is captured.
 
 ## GPU toolchain reconnaissance — 2026-10-02
 
@@ -442,6 +526,18 @@ File counts match the ramp exactly, so this directory is complete.
 
    *Lesson:* check that a result directory is complete before aggregating it, and
    state the extrapolation basis when generalising across e3max.
+3. **"The MKL LP64 relink gives 1.20x."** *Too low — measured across two
+   different nodes.* The first reading put MKL (654 s) on an Intel node against a
+   reference-BLAS run (784 s) on an AMD node. A paired re-run on one node gives
+   **1.98x** (776 s -> 391 s). *Lesson:* with a heterogeneous pool, one run per
+   arm is not a measurement; pair the configurations on a node.
+4. **"MPI scales negatively: 32 ranks is 0.85x of 8."** *Caveated, pending
+   re-measurement.* The 8x1 and 32x1 points were on different CPU vendors (Intel
+   vs AMD EPYC 7702), so rank count and node speed are entangled. The mechanism
+   (one channel per rank -> no scheduling slack) is still supported by the
+   source, but the 0.85x number must not be quoted until both points run on one
+   node. *Lesson:* record `nodelist` beside every timing — the harness does, but
+   these comparisons ignored it.
 
 ## Open hypotheses
 
