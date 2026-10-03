@@ -116,10 +116,14 @@ result, so a regression can't invalidate the baseline.
 - [x] Peak memory measured: rampsmall 1.65 GB/rank vs ramplarge **~20.5 GiB/rank**
       (OOM-killed at 32 ranks) — the ramp is a memory knob first
 - [x] Complete `cfp/` distribution: the Nmax24 tail is 9.2 % of bytes at e3max6
-- [ ] Ramp comparison at a **matched** configuration: rampsmall 8 ranks x 4 threads
-      = 13:04 (measured) vs ramplarge 8 x 4 (job `11119503`, running)
-- [ ] Recommend a production ramp
-- *Exit:* measured cost/memory vs ramp and a recommendation
+- [x] Ramp comparison at a **matched** configuration (8 ranks x 4 threads):
+      rampsmall **32/32 channels in 13:04**; ramplarge **2/32 channels in 10:19:31**
+      when cancelled — roughly 770x per channel
+- [x] Production-ramp recommendation: **do not use `ramplarge` at this size.** Three
+      independent failures — OOM at 32 ranks, cancelled at 8x1, time-limited at 8x4 —
+      plus the cost ratio above. `rampsmall` (or an intermediate ramp) is the only
+      practical choice; the question is where between them the accuracy/cost knee sits.
+- *Exit:* measured cost/memory vs ramp and a recommendation **— met**
 
 **Correction (2026-10-02):** the earlier claim that ramplarge at 32 ranks was
 infeasible was **wrong**. The scavenger pool is heterogeneous — 94 GB up to
