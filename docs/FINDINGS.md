@@ -291,10 +291,10 @@ rampsmall e3max6, 8 ranks x 4 threads, cold start, checked against the golden
 
 | job | node | CPU | BLAS | wall | three-body force | accept |
 | --- | --- | --- | --- | --- | --- | --- |
-| 11118101 | ccc0499 | AMD EPYC | reference | 784 s | — | pass, 1.61e-06 |
-| 11138828 | ccc0499 | AMD EPYC | reference | 768 s | 748.1 s | pass, 1.61e-06 |
-| 11125083 | ccc0386 | Intel G8358 | **MKL LP64** | 654 s | — | pass, 2.17e-06 |
-| 11138827 | ccc0499 | AMD EPYC | **MKL LP64** | **391 s** | 387.9 s | pass, 2.20e-06 |
+| 11118101 | ccc0499 | EPYC 9555 (Zen 5) | reference | 784 s | — | pass, 1.61e-06 |
+| 11138828 | ccc0499 | EPYC 9555 (Zen 5) | reference | 768 s | 748.1 s | pass, 1.61e-06 |
+| 11125083 | ccc0386 | Xeon 8358 (Ice Lake) | **MKL LP64** | 654 s | — | pass, 2.17e-06 |
+| 11138827 | ccc0499 | EPYC 9555 (Zen 5) | **MKL LP64** | **391 s** | 387.9 s | pass, 2.20e-06 |
 
 - **[measured] Paired on one node (ccc0499), MKL LP64 is 1.98x**: 776 s (mean of
   784/768) -> 391 s. The two reference-BLAS runs agree to 2.1 %, so this is a
@@ -322,7 +322,7 @@ the scheduler picked. Two runs of the *same binary* at the same configuration
 show how large that is:
 
 - MKL LP64, 8x4: **654 s on ccc0386 (Intel Xeon Platinum 8358)** vs **391 s on
-  ccc0499 (AMD EPYC)** — a **1.67x** node effect, same binary, same input.
+  ccc0499 (AMD EPYC 9555)** — a **1.67x** node effect, same binary, same input.
 - Two reference-BLAS 8x4 runs, both on ccc0499: 784 s and 768 s — **2.1 %**
   spread.
 
@@ -330,10 +330,26 @@ So repeat-to-repeat noise on one node is ~2 %, while the node changes the wall
 by up to 67 %. **Any comparison drawn across nodes is uninterpretable below
 ~2x.**
 
-- **[measured]** Node families in these runs: ccc0386 = Intel Xeon Platinum 8358
-  (32 cores/socket, 64 CPUs); ccc0258 = AMD EPYC **7702** (256 GB); ccc0496/498/499
-  = AMD EPYC (128 CPUs) with RTX 6000 GPUs. "AMD" is not one machine — AE7702
-  (Zen2, 2.0 GHz) is a different generation from the ccc049x nodes.
+- **[measured]** Node families in these runs. CPU models were confirmed with
+  `lscpu` probes (jobs 11139439/11139440), not inferred from the Slurm feature
+  tags:
+  - **ccc0386 = Intel Xeon Platinum 8358**, Ice Lake-SP, launched 2021:
+    32 cores/socket (64 CPUs), 2.6 GHz base, 80 MiB L2, 96 MiB L3, 8-ch DDR4.
+  - **ccc0499 = AMD EPYC 9555**, Zen 5 "Turin", launched late 2024:
+    64 cores/socket (128 CPUs), up to 4.41 GHz, 128 MiB L2, 512 MiB L3,
+    12-ch DDR5. ccc0496/0498 carry an identical feature set (128 CPUs, same
+    RTX-6000B layout, same memory) and are almost certainly the same part.
+  - **ccc0258 = AMD EPYC 7702**, Zen 2, 2019 (256 GB). "AMD" is not one machine:
+    Zen 2 (2019) and Zen 5 (2024) are three architecture steps apart.
+- **[inferred] The 1.67x node gap is explained by hardware generation, and it
+  means the ordering "AMD beats Intel" is not a conclusion.** EPYC 9555 is ~3.5
+  years newer than the Ice Lake Xeon that it was compared against, with ~1.3x
+  the clock (4.41 vs 3.4 GHz boost), 5x the L3, and DDR5 rather than DDR4 — for
+  a workload whose live matrices (4.6 GB at ramplarge) dwarf any cache, the
+  memory subsystem plausibly accounts for much of the gap. The comparison is
+  also **not** evidence that Intel MKL favours AMD: MKL is the BLAS on *both*
+  nodes, and there is no reference-BLAS run on ccc0386, so even the 1.98x MKL
+  *speedup factor* is measured only on Zen 5.
 - **[measured, caveat] The MPI negative-scaling result is confounded.** The 8x1
   point (1947 s) ran on **ccc0386 (Intel)** and the 32x1 point (2294 s) on
   **ccc0258 (AMD EPYC 7702)** — different vendors. The 0.85x "more ranks is
