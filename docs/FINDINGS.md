@@ -208,6 +208,47 @@ code), :`), not raw binary. Comparing decompressed text line by line:
    already writes its result to a file, removing the all-to-all broadcast is the
    highest-leverage change.
 
+## GPU toolchain reconnaissance — 2026-10-02
+
+- **[measured] `nvcc` is already available**: cuda/12.4, 12.6 and 12.8 all provide
+  a working `nvcc`. **A CUDA C++ arm of the bake-off needs no installation at all.**
+- **[measured] `gfortran` cannot offload to NVIDIA.** `-foffload=nvptx-none` fails
+  with *"GCC is not configured to support 'nvptx-none'"*; the only valid arguments
+  are `default` and `disable`. So the existing toolchain cannot be GPU-enabled by
+  adding a flag — a different compiler or a non-Fortran kernel is unavoidable.
+- **[measured] No `nvfortran`/`pgfortran` anywhere**, as previously established.
+- **[measured] The network is reachable** (`developer.nvidia.com:443`,
+  `github.com:443`), so the NVIDIA HPC SDK is obtainable — but it is several GB and
+  must land under scratch, never `$HOME`.
+- **[measured] Spack lives at `/sw/apps/spack/spack`**, not the path recorded
+  earlier.
+- **[measured] GPUs reachable from `scavenger`**: H100 x8 and x1/x3 nodes (sm_90),
+  L40S x8 (sm_89), RTX 6000 x8 (sm_75), V100 x2 (sm_70). No A100/H200 appeared in
+  the scavenger GPU list. **The bake-off target architecture therefore matters**:
+  sm_75 and sm_90 are different optimisation targets, and code tuned on one is not
+  automatically right for the other.
+
+### Consequence for the P4 plan
+
+The originally-planned three-way bake-off was
+*nvfortran vs `ifx` OpenMP-target vs C++/CUDA*. Two corrections:
+
+1. **`ifx` should be struck.** Intel's OpenMP offload targets Intel GPUs, not
+   NVIDIA, and none of our nodes are Intel-GPU. It was never a viable arm here.
+2. The bake-off is really **two arms**:
+   - **A. CUDA C++** — already-installed `nvcc`, hot kernel extracted behind
+     `ISO_C_BINDING`. No installation, no toolchain risk, but it means writing the
+     kernel twice (C++ and Fortran) and keeping them in step.
+   - **B. NVHPC `nvfortran`** — install the SDK under scratch; gives OpenACC /
+     CUDA Fortran with far less code disruption, at the cost of a multi-GB
+     install and a compiler ICC does not currently provide.
+
+Recommendation: start with **A** for the bake-off, because it is the only arm
+whose prerequisite already exists, and it answers the real question ("is this
+kernel worth porting at all?") without betting on an install. Keep **B** as the
+production path if A shows the speedup is real — OpenACC across many kernels beats
+hand-written C++ for maintainability.
+
 ## Cluster environment
 
 - **[measured]** `IllinoisComputes`: 22 nodes x 128 cores, 512 GB, 3.8 GB/core,
