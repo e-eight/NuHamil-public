@@ -30,6 +30,11 @@ breaking the existing working build:
 - Never compute on login nodes — all builds and runs go through Slurm.
 - Account `soham-ic`; partitions `IllinoisComputes` (CPU), `IllinoisComputes-GPU`,
   `scavenger` (pre-emptible, use `--requeue`).
+- **`ic-express` is off-limits for this project.** Its policy is short
+  interactive/debugging jobs with a 2-hour maximum, and it is a single 48-CPU node,
+  so batch builds or sweeps there would block the express queue. Slurm advertises
+  `MaxTime=08:00:00` for it and accepts violating jobs silently — the enforced limit
+  is not the policy. Check a partition's *published* intended use.
 - All artefacts under `/scratch/soham/NuHamil-faster`; nothing into `$HOME`.
 - `~/NuHamil-public` is the user's original working copy — never modified.
 - Upstream is third-party: `upstream` remote is fetch-only with push disabled.

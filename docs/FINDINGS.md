@@ -169,15 +169,23 @@ Same case, same binary, only the rank count differs:
 - **[measured]** `IllinoisComputes`: 22 nodes x 128 cores, 512 GB, 3.8 GB/core,
   3-day limit. **Badly contended** — 473 jobs pending when observed, so short jobs
   should go to `scavenger`, which started a 32-CPU job in ~25 s.
-- **[measured]** **Partition choice matters more than expected.** On 2026-10-02
-  evening `scavenger` held four jobs at `(Priority)` for 20+ minutes despite an idle
-  node, while the same 32-CPU build submitted to **`ic-express` ran in 74 s**. Use
-  `ic-express` for short jobs and builds; keep long sweeps on one partition so that
-  run-to-run comparisons are not confounded by node/partition differences (a +10 %
-  spread has already been observed between identical configurations).
-- **[measured]** `scavenger` timelimit is 1 day; `secondary` is 4 h, which is too
-  short for the OpenMP sweep's worst case (a 1-rank run that gets no threading help
-  is ~4.3 h).
+- **[measured]** On 2026-10-02 evening `scavenger` held four jobs at `(Priority)`
+  for 20+ minutes despite an idle node. **Do not divert that work to `ic-express`.**
+- **[measured] `ic-express` is not an appropriate partition for this project.** Its
+  published policy is *short, interactive/debugging jobs needing rapid turnaround —
+  not long-running production work — with a 2-hour maximum*. Slurm nonetheless
+  advertises `MaxTime=08:00:00`, so a job violating the policy is accepted without
+  complaint: **the enforced limit is not the policy.** It is also a *single* node
+  (`TotalNodes=1, TotalCPUs=48`, `gres/gpu=16`), so anything substantial there blocks
+  the entire express queue for everyone. Keep builds and sweeps on
+  `scavenger`/`IllinoisComputes`, and use `ic-express` only if a genuinely short,
+  interactive task ever needs it.
+- **[measured]** Because `ic-express` is off-limits, long sweeps must stay on
+  `scavenger` (1-day limit). `secondary` allows only 4 h, which is too short for the
+  OpenMP sweep's worst case — a 1-rank run that gets no threading help is ~4.3 h.
+  Keeping every point on one partition also avoids confounding run-to-run
+  comparisons, where a +10 % spread has already been observed for identical
+  configurations.
 - **[measured]** `IllinoisComputes-GPU`: 4 x A100-80GB (sm_80, 128 cores, EPYC 7763)
   + 1 x H200-8GPU (sm_90, 64 cores, Emerald Rapids); 3-day limit.
 - **[measured]** Modules: gcc 12.4/13.3, openmpi 5.0.1, gsl 2.8, cuda 12.4/12.6/12.8,

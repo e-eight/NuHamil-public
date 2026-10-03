@@ -17,6 +17,8 @@ NuHamil generates nucleon–nucleon (NN) and three-nucleon (3N) matrix elements 
 
 Build and run **only on cluster compute nodes** — never on login nodes. All output goes under `/scratch/soham/NuHamil-faster`.
 
+Use `scavenger` (pre-emptible; pass `--requeue`) or `IllinoisComputes`. **Do not run builds or sweeps on `ic-express`:** its policy is short interactive/debugging jobs with a 2-hour maximum, and it is a single 48-CPU node, so batch work there blocks the express queue. Slurm advertises `MaxTime=08:00:00` for it and will accept a violating job silently — the enforced limit is not the policy. Check a partition's *published* intended use, not just `scontrol show partition`.
+
 ```bash
 sbatch bench/build_icc.sbatch base       # serial+OpenMP and MPI builds -> build/base/
 python3 bench/gen_cases.py               # namelists for every case x ramp
