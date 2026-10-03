@@ -445,6 +445,24 @@ contains
     integer :: length
     character(kind=c_char,len=256) :: buffer
     real(8) :: time
+    character(:), allocatable :: tmpfn
+    integer(c_int) :: rc
+
+    interface
+      ! Publish the cache atomically, so that s%isfile(fn) is a truthful
+      ! readiness test.  Writing straight to fn left a window in which another
+      ! rank saw the file to exist, opened it, read a partial gzip stream and
+      ! died in ReadNNForceHORelative with a bare "End of file" -- reproduced
+      ! at 32 ranks (4/4 cold runs).  A collective fix (e.g. MPI_Bcast of the
+      ! existence flag) is NOT safe here: this routine is reached from the
+      ! per-channel farm, so ranks call it an unequal number of times.
+      function c_rename(oldpath, newpath) bind(C, name="rename") result(rc)
+        import :: c_char, c_int
+        character(kind=c_char), dimension(*) :: oldpath
+        character(kind=c_char), dimension(*) :: newpath
+        integer(c_int) :: rc
+      end function c_rename
+    end interface
 
     time = omp_get_wtime()
     two => this%ms
@@ -459,7 +477,8 @@ contains
         end do
       end do
     end do
-    f = gzip_open(fn%val, "wt")
+    tmpfn = trim(fn%val) // '.tmp'
+    f = gzip_open(tmpfn, "wt")
     write(buffer,*) ntot, N2max, jmax
     length = len_trim(buffer)
     err = gzip_writeline( f, trim(buffer), length)
@@ -484,6 +503,11 @@ contains
       end do
     end do
     err = gzip_close(f)
+    rc = c_rename(trim(tmpfn)//c_null_char, trim(fn%val)//c_null_char)
+    if(rc /= 0) then
+      write(*,'(3a)') 'Error: cannot publish NN cache ', trim(tmpfn), ' -> '//trim(fn%val)
+      stop
+    end if
     call timer%add(sy%str('Write to file'), omp_get_wtime() - time)
   end subroutine WriteNNForceHORelative
 
@@ -510,6 +534,10 @@ contains
     f = gzip_open(fn%val, "rt")
     buffer = ""
     err = gzip_readline( f, buffer, len(buffer) )
+    if(.not. c_associated(err)) then
+      write(*,'(2a)') "Error: truncated NN cache (header): ", trim(fn%val)
+      stop
+    end if
     read(buffer,*) ntot, N2max_r, jmax_r
     if(jmax_r < jmax) then
       write(*,*) "Error in ", __FILE__, " at ", __LINE__
@@ -519,6 +547,12 @@ contains
 
     do i = 1, ntot
       err = gzip_readline( f, buffer, len(buffer) )
+      ! gzgets returns NULL at EOF; without this check a short read shows up
+      ! only as a bare "End of file" inside the list-directed read below.
+      if(.not. c_associated(err)) then
+        write(*,'(3a,i0)') "Error: truncated NN cache ", trim(fn%val), " at record ", i
+        stop
+      end if
       read(buffer,*) j, p, s, z, n1, l1, n2, l2, v
       if(2*n1 + l1 > N2max) cycle
       if(2*n2 + l2 > N2max) cycle
