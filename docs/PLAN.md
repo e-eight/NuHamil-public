@@ -85,6 +85,16 @@ breaking the existing working build:
         **1.15x** (8x4 765 s vs 32x1 883 s), not the 2.9x first reported
   - [x] Fixed the NN-cache TOCTOU race that made cold >=32-rank runs crash (4/4
         before, clean after; deuteron + `accept.py` unchanged) — see `FINDINGS.md`
+  - [x] MKL LP64 is now the ICC default: 8x4 cold on ccc0497 is **361 s** vs
+        765 s for reference BLAS on the same node = **2.12x**, numerics PASS.
+        `MKL_NUM_THREADS` needs no tuning (forcing 1 is 1.08x *slower*)
+  - [x] Tried a node-speed calibration probe (`bench/nodecal.c`) so experiments
+        would not need same-node pairing — **not validated**: nodes with the
+        *same* CPU differ 1.3-3.5x on the probe while their full-case times agree
+        to 2.8 %, i.e. it measures co-tenant load. **Keep pairing.**
+  - [ ] Determine what the full case is actually bound by (compute vs memory
+        bandwidth): `gemm1` and `triad1` rank the nodes in opposite orders, and
+        the full-case time agrees with `triad1`
   - [ ] 2-node MPI
 - *Exit:* reproducible numbers, serial-vs-MPI curve, "where the time goes"
 
@@ -110,11 +120,11 @@ breaking the existing working build:
       `make print-config` / `check-deps`
 - [ ] **Track B** thin CMake + `CMakePresets.json` (carrier for GPU targets later)
 - [ ] Validate a second toolchain: AOCC/flang + AOCL (already installed)
-- [x] Tuned-BLAS site fragment `config/sites/icc-mkl.mk` — a link-line-only
-      variant of `icc.mk` using MKL **LP64**; measured **1.98x** on rampsmall 8x4
-      with numerics PASS (see `FINDINGS.md`). Decide later whether it becomes the
-      ICC default or stays an opt-in.  *(Not yet in the Makefile's default; not
-      wired into `bench/build_icc.sh` as a tag.)*
+- [x] Tuned BLAS is now the **ICC default**: `config/sites/icc.mk` links MKL
+      **LP64** (measured **1.98x** on rampsmall 8x4, numerics PASS). The former
+      reference-BLAS link line is kept as `config/sites/icc-refblas.mk`
+      (`SITE=icc-refblas`) so pre-change numbers stay reproducible — see
+      `FINDINGS.md`
 - *Exit:* clean-checkout build on ICC + one other toolchain, comparable to golden
 
 Each step is rebuilt on `scavenger` (57 s) and re-checked against the deuteron

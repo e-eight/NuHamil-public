@@ -370,10 +370,12 @@ with 4 threads, **6.5 M samples**:
 ## Tuned BLAS relink: MKL LP64 is ~2.0x — measured 2026-10-03
 
 The profile above made relinking a tuned BLAS the top priority. It was tested as
-a **pure link-line change**: `config/sites/icc-mkl.mk` is `icc.mk` with
-`-llapack -lrefblas` replaced by MKL LP64. No source file and no FFLAGS change —
-`diff config/sites/icc.mk config/sites/icc-mkl.mk` shows only LFLAGS. LP64 is
-required; ILP64 segfaults (see "Build system").
+a **pure link-line change**: `-llapack -lrefblas` replaced by MKL LP64. No source
+file and no FFLAGS change — only LFLAGS. LP64 is required; ILP64 segfaults (see
+"Build system"). The experiment is concluded: **`config/sites/icc.mk` now links
+MKL LP64 by default**, and the former reference-BLAS link line is preserved as
+`config/sites/icc-refblas.mk` (`SITE=icc-refblas`) so pre-change numbers remain
+reproducible.
 
 rampsmall e3max6, 8 ranks x 4 threads, cold start, checked against the golden
 `.me3j` with `bench/accept.py`:
@@ -455,6 +457,63 @@ by up to 67 %. **Any comparison drawn across nodes is uninterpretable below
   configuration on >= 2 nodes and report per-node, before quoting any delta
   below ~2x. The harness already records `nodelist` in `run-*.env`; the gap is
   in how comparisons are drawn, not in what is captured.
+
+## Tuned BLAS is now the default — 2026-10-03
+
+- **[measured]** `config/sites/icc.mk` (the ICC default) now links **MKL LP64**;
+  the former Netlib reference link line is preserved verbatim in
+  `config/sites/icc-refblas.mk` (`SITE=icc-refblas`), and the experimental
+  `icc-mkl.mk` fragment is retired.
+- **[measured]** Re-measured on one node (ccc0497), 8x4 cold, with the current
+  binary (MKL + the NN-cache race fix, build tag `mkl-fix`): **361 s**, versus
+  **765 s** for reference BLAS on the same node = **2.12x**. That agrees with the
+  1.98x earlier measured on ccc0499, and confirms the win is not node-specific.
+  Numerics PASS (`accept.py`, 2.2e-06) and the deuteron is unchanged at
+  -2.22434846 MeV.
+- **[measured] MKL's own threading is fine as-is.** With the app already running
+  4 OpenMP threads per rank, forcing `MKL_NUM_THREADS=1` is *slower*: 389 s vs
+  361 s (1.08x). So `mkl_gnu_thread` is not fighting libgomp, and no thread knob
+  needs setting. (This was worth checking: nested threading would have been a
+  free win or a silent disaster, depending on the sign.)
+- **[measured]** `mkl-fix` is the first binary carrying both improvements; it
+  should be the baseline for further work.
+
+## Node calibration probe: built, and NOT validated — 2026-10-03
+
+Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
+every experiment on one node is expensive because queue time is the real
+bottleneck. `bench/nodecal.c` measures a fixed ~20 s of work — single-thread and
+8-thread `dgemm`, and a streaming triad with a working set past L3 — to produce a
+per-node normalisation factor.
+
+It does **not** work, and the failure is instructive.
+
+| node | CPU | gemm1 (v1 / best-of-5) | triad1 (v1 / best-of-5) | full-case 8x1 |
+| --- | --- | --- | --- | --- |
+| ccc0497 | EPYC 9555 | 64.8 / 66.5 | 45.5 / 49.6 | 1360 s |
+| ccc0499 | EPYC 9555 | 49.3 / 56.1 | 12.9 / 18.9 | 1398 s |
+| ccc0386 | Xeon 8358 | 83.3 / 94.4 | 15.8 / 15.9 | 1947 s |
+| ccc0258 | EPYC 7702 | 24.9 / 42.4 | 20.8 / 23.3 | — (32x1: 2294 s) |
+
+- **[measured] v1 (one sample each) is invalid.** ccc0497 and ccc0499 have the
+  *same CPU model*, yet came out 1.31x apart on `gemm1` and **3.5x** apart on
+  `triad1` — while their full-case times agreed to 2.8 %. Identical hardware
+  cannot differ that much by capability, so the probe was measuring **co-tenant
+  load**, not the node.
+- **[measured] Best-of-5 helps but does not rescue it.** The identical-CPU gap
+  narrows to 1.19x (`gemm1`) and 2.6x (`triad1`). Sampling for ~20 s does not
+  find an uncontended moment when the co-tenant job runs for hours.
+- **[inferred] Conclusion: do not use this as a normaliser.** Keep pairing
+  configurations on one node. The probe stays in `bench/` as a diagnostic, but
+  it is not a calibration factor, and no result should be divided by it.
+- **[measured, and more interesting] It is not even clear what the full case is
+  bound by.** `gemm1` ranks ccc0386 *best* (94.4) and `triad1` ranks it *worst*
+  (15.9), and the full-case time agrees with `triad1` — the slowest node is the
+  one with the weakest single-stream bandwidth, not the weakest GEMM. If the
+  workload is memory-bandwidth-bound rather than flop-bound, that reframes both
+  P3 (memory layout and the result redistribution matter more than arithmetic)
+  and P4 (a GPU would be accelerating the wrong thing). **Open question; the
+  next sampling profile should be read with it in mind.**
 
 ## GPU toolchain reconnaissance — 2026-10-02
 
