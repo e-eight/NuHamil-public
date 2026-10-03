@@ -536,6 +536,63 @@ Top symbols: `gomp_barrier_wait_end` 18.1, `non_local_regulator_ho_mat` 10.0,
    library math, 25 % idle, 18 % physics spread over many small routines). That
    removes the premise of the bake-off, and P4 should fall back to a written memo.
 
+### Where the ~36 % lives: three loop-invariant calls, all hoistable
+
+Checked before writing any vectorisation or GPU code, because "36 % in libm" has
+two very different remedies. The answer is **hoisting, not vectorisation** — the
+elementary functions are being re-evaluated for arguments that never change.
+
+**1. `non_local_regulator` — the dominant one**
+(`src/ThreeBody/NNNForceHOIsospin.F90:372`)
+
+```fortran
+do i = 1, size(p)                              ! NMesh = 500
+  do k = 1, size(p)                            ! 500
+    ex = - ( 0.5d0*(pi**2 + pk**2)*hc**2/params%lambda_3nf_nonlocal**2 )**params%RegulatorPower
+    f = f + wi*wk * Radial(i,n12,LL)*Radial(k,n3,l) * exp(ex) * Radial(i,n45,LL)*Radial(k,n6,l)
+```
+
+`ex` depends **only on (i,k)** — on none of the six quantum-number arguments. It
+is still recomputed inside the innermost loop, and the function is called once per
+`(ibra,iket)` matrix element from the enclosing `non_local_regulator_ho_mat`. So
+`pow`+`exp` run `size(p)**2 = 250 000` times **per matrix element**, where 250 000
+evaluations would cover the whole channel. Precompute
+`W(i,k) = wi*wk*exp(ex(i,k))` once and the inner loop becomes four multiplies.
+This single hoist should take most of `exp` (7.2 % plus part of the ~16 % unnamed
+libm) and all of `__powidf2` (4.8 %).
+
+**2. `local_regulator` — recomputed for a constant argument**
+(`src/ThreeBody/NNNForceLocal.F90:1592`, called at :1530 and inside `f1_func`/`f2_func`)
+
+```fortran
+x = ( q / lambda )**n
+f = exp( - x**2 )          ! two pow + one exp
+```
+
+It is always called as `local_regulator(p*hc, lambda, power)` — a pure function of
+the p-mesh index `j` — but from inside the `x` and `i` loops, so it is recomputed
+for every `(x,i)` pair. A length-`NMesh_p` table removes two `pow`s and an `exp`
+per call site.
+
+**3. `spherical_bessel` — a per-call constant threshold** (`src/MyLibrary.F90:1013`)
+
+```fortran
+a = exp(-200.d0/l*log(10.d0) + ...)   ! depends only on l
+if(x < a) return
+```
+
+`a` is a function of `l` alone, yet an `exp` and two `log`s are evaluated on every
+Bessel call — and this sits underneath `f1_func`/`f2_func`, which is where the GSL
+Bessel traffic (8.4 %) comes from. Precompute per `l`.
+
+**4. Integer powers.** `p**3`, `p**2`, `r**2`, `r1**2`, `x**2`, `(q/lambda)**n` and
+`(...)**params%RegulatorPower` all reach `__powidf2`/`pow`. The hot ones disappear
+with the hoists above; the rest are cheap to write as multiplications.
+
+**Verdict: all hoistable — none of it needs vectorisation, and none of it needs a
+GPU.** The changes are mechanical and numerically low-risk (reassociation only),
+and they are verifiable with the deuteron anchor plus `bench/accept.py`.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing

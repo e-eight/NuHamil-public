@@ -145,11 +145,16 @@ The re-profile resets the target list. By cycles: **libm + integer power ~36 %**
 **OpenMP barriers ~24.6 %**, our own physics 18.2 %, MKL BLAS 10.6 %, GSL Bessel
 8.4 %. The work is no longer "make the arithmetic faster" — MKL did that — but:
 
-- [ ] **Transcendental math (~36 %) — the largest item, and unplanned.** Locate the
-      `exp`/`pow`/`x**n` call sites (the non-local regulator and the 2-pion pieces
-      are the suspects), then hoist invariants out of the inner loops or vectorise.
-      Start with `__powidf2` (4.8 %), libgcc's software integer power — the most
-      local of these.
+- [ ] **Transcendental math (~36 %) — located, and all of it is hoistable.**
+      Three loop-invariant calls, detailed in `FINDINGS.md`: (a)
+      `non_local_regulator` (`NNNForceHOIsospin.F90:372`) recomputes
+      `exp(-(...)**RegulatorPower)` over the 500x500 mesh **per matrix element**
+      when it depends only on the mesh indices — precompute the `W(i,k)` table;
+      (b) `local_regulator` is a pure function of the p-mesh index but is called
+      from inside the `x`/`i` loops; (c) `spherical_bessel` recomputes an `exp`
+      and two `log`s per call for a threshold that depends only on `l`. **No
+      vectorisation is needed.** Verify with the deuteron anchor + `accept.py`,
+      then A/B the end-to-end wall on one node (~6 min/run now).
 - [ ] **Barriers (~24.6 %)** — the unchanged P3 target and the biggest structural
       item. This is where the farm redesign and the O(sum dim^2) result
       redistribution pay off.
