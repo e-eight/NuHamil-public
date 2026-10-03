@@ -121,6 +121,50 @@ Same case, same binary, only the rank count differs:
   Causes not yet separated (scavenger node contention vs per-rank profiling
   overhead). **Repeat runs are needed before quoting small deltas.**
 
+## OpenMP works, and it is where the speed is — measured 2026-10-02
+
+First thread measurement in the project. rampsmall e3max6, constant 32 CPUs:
+
+| ranks x threads | wall | imbalance max/mean |
+| --- | --- | --- |
+| 32 x 1 (job A) | 2294 s (38:25) | 1.522 |
+| **8 x 4** | **784 s (13:04)** | **1.080** |
+
+- **[measured]** 2.9x faster at the *same* CPU count, and it produced a complete
+  result (32/32 `cfp`, 64 `ops`, a `.me3j.gz`), so the run is not merely fast.
+- **[measured]** Imbalance collapses from 1.522 to 1.080: threads smooth the
+  channel-to-channel spread *inside* a work unit, which is exactly what the
+  coarse 32-unit farm cannot do. This is strong evidence for the P3 design —
+  threading and finer units attack the same defect.
+- **[inferred]** This also reframes the negative-scaling result: 32 ranks x 1 thread
+  is the *worst* use of 32 CPUs here. The GPUs/threads argument is not "use fewer
+  ranks" but "give each rank threads".
+
+### Threading does not preserve bit-identical output (and neither does MPI)
+
+`.me3j` files are **ASCII text** (header: `NNN int. calculated by NuHamil (Tokyo
+code), :`), not raw binary. Comparing decompressed text line by line:
+
+| comparison | max abs diff | max rel diff | lines differing |
+| --- | --- | --- | --- |
+| 32x1 vs 8x4 (identical binary, threading only) | 8.4e-07 | 5.3e-02 | 44269 / 45633 |
+| 32x1 vs frozen golden (different binary + build) | 1.61e-06 | 5.0e-02 | 39486 / 45633 |
+
+- **[measured]** Output is **not reproducible bit-for-bit across configurations**.
+  Typical differences are ~1e-7 relative, i.e. the single-precision epsilon
+  (`lab_3bme_precision` defaults to `single`); the worst *relative* deviations
+  (~5 %) occur on small elements, which is the signature of cancellation in a
+  reordered sum.
+- **[measured]** The threading-induced deviation is **no larger than the deviation
+  the code already exhibits** between an MPI run and the frozen reference
+  (8.4e-07 vs 1.61e-06 absolute). OpenMP does not add error beyond the existing
+  noise floor.
+- **[measured]** **Therefore hashing `.me3j.gz` is the wrong correctness test.** It
+  flags every configuration change as a failure. `golden/me3j/SHA256SUMS-me3j` is
+  still valid for detecting file corruption or drift, but a real acceptance test
+  needs a **numeric tolerance**. Until that exists, "numerics match golden" cannot
+  be asserted by hash.
+
 ## The MPI farm, read from source (2026-10-02)
 
 - **[measured]** `src/MPIFunction.F90` is a single-token ping-pong: a worker sends
