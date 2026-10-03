@@ -278,6 +278,18 @@ srun: error: ccc0259: task 5: Out Of Memory
 | rampsmall e3max6 @ 8 and @ 32 | 1.65 GB | flat across rank count |
 | ramplarge e3max6 @ 32 | **~20.5 GiB** | OOM-killed against a 200 GiB allocation |
 
+- **[measured] The OOM was our request, not a hardware ceiling.** Total memory is
+  `nranks x peak-per-rank`, so 32 ranks needed ~656 GiB — which would fit, because
+  **the scavenger pool is heterogeneous**: it holds nodes from 94 GB up to **4031 GB**,
+  including ~15 nodes at >= 1000 GB. Job C happened to land on a 257 GB node with a
+  200 GiB cgroup limit. Memory here is a *request*, not a wall; size `--mem` to the
+  need, or choose a smaller rank count. This retracts the earlier "ramplarge at 32
+  ranks is infeasible" claim.
+- **[inferred]** Peak *per rank* looks independent of rank count (rampsmall is flat at
+  1.65 GB across 8 and 32 ranks), so total memory scales linearly with ranks. That is
+  what makes a smaller rank count an effective memory lever if one is ever needed —
+  but note it also costs workers, since rank 0 never computes.
+
 - **[measured]** The ramp changes peak memory by **~13x** (1.65 GB -> 20.5 GiB).
   The earlier "peak RSS is flat" result was **rampsmall-specific** and must not be
   generalised: at rampsmall everything is small enough that the ramp barely moves

@@ -116,11 +116,17 @@ result, so a regression can't invalidate the baseline.
 - [x] Peak memory measured: rampsmall 1.65 GB/rank vs ramplarge **~20.5 GiB/rank**
       (OOM-killed at 32 ranks) — the ramp is a memory knob first
 - [x] Complete `cfp/` distribution: the Nmax24 tail is 9.2 % of bytes at e3max6
-- [ ] Ramp comparison at a fixed rank count: rampsmall @8 = 32:34 vs ramplarge @8
-      (job `11117512` running). 32 ranks is infeasible at ramplarge — ~656 GiB
-      against a 515 GB node
+- [ ] Ramp comparison at a **matched** configuration: rampsmall 8 ranks x 4 threads
+      = 13:04 (measured) vs ramplarge 8 x 4 (job `11119503`, running)
 - [ ] Recommend a production ramp
 - *Exit:* measured cost/memory vs ramp and a recommendation
+
+**Correction (2026-10-02):** the earlier claim that ramplarge at 32 ranks was
+infeasible was **wrong**. The scavenger pool is heterogeneous — 94 GB up to
+**4031 GB**, with 15 nodes at >= 1000 GB — so the ~656 GiB that 32 ranks needed
+would have fitted on a large node. The OOM was caused by the `--mem=200G` request
+landing on a 257 GB node, not by a hardware ceiling: the binding constraint was
+our request, and memory is a request rather than a wall.
 
 ### P4 — GPU feasibility, then staged offload
 
