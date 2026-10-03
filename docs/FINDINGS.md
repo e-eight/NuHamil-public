@@ -478,6 +478,64 @@ by up to 67 %. **Any comparison drawn across nodes is uninterpretable below
 - **[measured]** `mkl-fix` is the first binary carrying both improvements; it
   should be the baseline for further work.
 
+## Re-profile with MKL: the bottleneck moved to libm and barriers — 2026-10-03
+
+Same method as the 2026-10-02 profile so the two are comparable: one heavy channel
+(`j3p+t1 Nmax20`) left uncomputed in a copy of a completed run, serial binary,
+4 threads, `perf record -e cycles:u`. Job **11141497**, ccc0497, wall 128 s.
+`bench/reprofile.sbatch` now automates this (copy the run dir, delete one
+channel's two `ops/` files, profile; `NUHAMIL_CLEAN=0` so the rest return early).
+
+By shared object — this is where the old profile's `dgemm` share went:
+
+| % cycles | object | note |
+| --- | --- | --- |
+| **31.3 %** | **libm.so.6** | `exp` + unnamed libm internals |
+| **24.6 %** | **libgomp** | barrier idle |
+| 18.2 % | NuHamil_serial.exe | our own physics |
+| 10.6 % | libmkl_def.so.2 | `dgemm` kernel + `xdcopy` + `pst` |
+| 8.4 % | libgsl.so.28 | Bessel |
+| 4.8 % | libgcc_s.so.1 | `__powidf2` (software integer power) |
+
+Top symbols: `gomp_barrier_wait_end` 18.1, `non_local_regulator_ho_mat` 10.0,
+`exp` 7.2, libm `0x648a4` 6.3, `mkl_blas_def_dgemm_kernel_zen` 4.9,
+`__powidf2` 4.8, `gomp_team_barrier_wait_end` 4.6, GSL `J_CF1`/`j2_e`/`j1_e`
+1.9/1.9/1.7, `get_overlap_xis_ho` 1.6, `set_two_pion_exchange_c3` 0.9.
+
+- **[measured] `dgemm` is solved: 40.1 % -> 10.6 %.** The MKL relink removed the
+  dominant cost exactly as intended, which is why it was worth ~2x.
+- **[measured] The largest remaining cost is elementary math, not physics:**
+  libm 31.3 % + `__powidf2` 4.8 % ~= **36 %** in `exp`/`pow`/integer-power
+  evaluation. This was invisible before — at 2.8 % `exp` and 2.8 % `__powidf2`
+  in the old profile it looked negligible, and it only became the top item once
+  `dgemm` stopped hiding it.
+- **[measured] Barriers are unchanged and now co-dominant: ~24.6 %** (18.1 + 4.6).
+  In absolute terms that is roughly two thirds of the old 25.4 % figure, but it is
+  now the single largest *structural* item, and the one P3 already targets.
+- **[measured] Only 18.2 % of cycles are in NuHamil's own code**, and GSL's Bessel
+  functions are 8.4 % — much larger than the 3.3 % previously recorded.
+- **[inferred] Compute vs bandwidth, resolved in favour of compute.** The open
+  question raised by the nodecal `gemm1`/`triad1` disagreement is answered: the
+  cost sits in scalar transcendental evaluation and barrier idle, not in a
+  memory-stall symbol. Caveat: `cycles:u` attributes a stalled load to the symbol
+  containing it, so this is suggestive rather than proof — but `exp`/`pow` on
+  scalars is arithmetic, and the nodecal correlation was already known invalid.
+
+### Consequence for priorities (revised 2026-10-03)
+
+1. **Barriers (~25 %) — unchanged P3 target.** Structural, and the largest single
+   item that is not arithmetic.
+2. **libm + integer power (~36 %) — new, and now the biggest target.** Needs the
+   call sites located (the non-local regulator and the 2-pion pieces are the
+   suspects), then either invariant hoisting out of the inner loops or a
+   vectorised path. Nothing in the plan anticipated this.
+3. **GSL Bessel (8.4 %)** — recursions instead of per-call evaluation; the
+   original 3.3 % estimate undersold it.
+4. **`__powidf2` (4.8 %)** — software integer power, replaceable locally.
+5. **P4 GPU: there is now no hot kernel to port.** The cost is diffuse (36 %
+   library math, 25 % idle, 18 % physics spread over many small routines). That
+   removes the premise of the bake-off, and P4 should fall back to a written memo.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing

@@ -92,9 +92,13 @@ breaking the existing working build:
         would not need same-node pairing — **not validated**: nodes with the
         *same* CPU differ 1.3-3.5x on the probe while their full-case times agree
         to 2.8 %, i.e. it measures co-tenant load. **Keep pairing.**
-  - [ ] Determine what the full case is actually bound by (compute vs memory
-        bandwidth): `gemm1` and `triad1` rank the nodes in opposite orders, and
-        the full-case time agrees with `triad1`
+  - [x] **Re-profiled** with MKL on one node (job 11141497): `dgemm` 40 % -> 10.6 %;
+        the cost is now **libm 31.3 % + `__powidf2` 4.8 % ~= 36 %** elementary math,
+        **libgomp barriers 24.6 %**, our own physics 18.2 %, GSL Bessel 8.4 %.
+        Answers the question above in favour of **compute, not bandwidth**.
+        `bench/reprofile.sbatch` automates the method — see `FINDINGS.md`
+  - [x] ~~Determine what the full case is bound by~~ **Answered:** scalar
+        transcendental evaluation and barrier idle, not a memory-stall symbol
   - [ ] 2-node MPI
 - *Exit:* reproducible numbers, serial-vs-MPI curve, "where the time goes"
 
@@ -135,11 +139,21 @@ result, so a regression can't invalidate the baseline.
 *Sizing (revised 2026-10-03).* The thread-vs-rank gap is **1.15x** at a constant 32
 CPUs on one node, not the 2.9x first reported — that figure was a node difference.
 Scaling 8 -> 32 ranks is **1.54x** (sub-linear, ~38 % efficiency), so the coarse
-32-unit farm is a real but not catastrophic limit. The profile's **25 % of cycles
-idling at OpenMP barriers** and the O(sum dim^2) result redistribution remain the
-two concrete targets; the exit target below should be revisited against the 1.15x
-starting point.
+32-unit farm is a real but not catastrophic limit.
 
+The re-profile resets the target list. By cycles: **libm + integer power ~36 %**,
+**OpenMP barriers ~24.6 %**, our own physics 18.2 %, MKL BLAS 10.6 %, GSL Bessel
+8.4 %. The work is no longer "make the arithmetic faster" — MKL did that — but:
+
+- [ ] **Transcendental math (~36 %) — the largest item, and unplanned.** Locate the
+      `exp`/`pow`/`x**n` call sites (the non-local regulator and the 2-pion pieces
+      are the suspects), then hoist invariants out of the inner loops or vectorise.
+      Start with `__powidf2` (4.8 %), libgcc's software integer power — the most
+      local of these.
+- [ ] **Barriers (~24.6 %)** — the unchanged P3 target and the biggest structural
+      item. This is where the farm redesign and the O(sum dim^2) result
+      redistribution pay off.
+- [ ] GSL Bessel (8.4 %) — recursions instead of per-call evaluation.
 - [ ] Attribution with `papi/7.1.0` + per-rank timers
 - [ ] Re-architect the master–worker farm: cost-weighted tiles, decentralised
       queue, point-to-point result return, drop barriers, overlap comm/compute
@@ -148,6 +162,7 @@ starting point.
 - [x] Prerequisite: fixed the NN-cache TOCTOU race that crashed cold runs at
       >=32 ranks (`src/TwoBody/NNForce.F90`, atomic publish) — see `FINDINGS.md`
 - *Exit:* >= 2x on the medium case, numerics match golden, scaling to >= 2 nodes
+  *(re-derive the 2x from the corrected baseline before treating it as a target)*
   *(the >= 2x target predates the corrected baseline — re-derive it first)*
 
 ### P3b — Jacobi-space / ramp cost
@@ -173,14 +188,26 @@ would have fitted on a large node. The OOM was caused by the `--mem=200G` reques
 landing on a 257 GB node, not by a hardware ceiling: the binding constraint was
 our request, and memory is a request rather than a wall.
 
-### P4 — GPU feasibility, then staged offload
+### P4 — GPU feasibility: gated on a hot kernel that no longer exists
 
-- [ ] **4.0** Bake-off on one A100: nvfortran (OpenACC/CUDA Fortran) vs `ifx`
-      OpenMP-target vs C++/CUDA kernel extraction behind `ISO_C_BINDING`
+*Re-scoped 2026-10-03.* The premise of the bake-off was a dominant hot kernel to
+offload. The re-profile removes it: the cost is diffuse (36 % library
+transcendentals, ~25 % barrier idle, 18 % physics spread over many small
+routines), and `dgemm` — the one kernel that would have been worth porting — is
+down to 10.6 % after the MKL relink. Two corrections from the GPU reconnaissance
+stand: `ifx` is not an option (no Intel GPUs here), and there is no A100 in the
+scavenger pool (sm_90 H100 / sm_89 L40S / sm_75 RTX 6000 / sm_70 V100).
+
+- [ ] **4.0** Re-state the premise: identify a kernel that is both *hot* and
+      offloadable, or conclude that none exists. No current candidate satisfies
+      the "hot" half.
 - [ ] **Gate:** >= ~3–5x on one hot kernel with matching numerics
-- [ ] **4.2** Staged per-kernel port; CPU path preserved; one MPI rank per GPU
+- [ ] **4.1** If a candidate appears: CUDA C++ behind `ISO_C_BINDING` is the
+      low-risk arm (`nvcc` is already installed); NVHPC/OpenACC is the
+      maintainable production path if a multi-GB scratch install is justified
 - [ ] **4.3** If no-go, prototype the ported fraction in Kokkos/CuPy/JAX only
-- *Exit:* written go/no-go memo
+- *Exit:* written go/no-go memo — currently reads as **no-go pending a hot
+  kernel**, and writing it up is cheap
 
 ### P5 — Consolidate & hand off
 
