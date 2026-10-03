@@ -593,6 +593,47 @@ with the hoists above; the rest are cheap to write as multiplications.
 GPU.** The changes are mechanical and numerically low-risk (reassociation only),
 and they are verifiable with the deuteron anchor plus `bench/accept.py`.
 
+### Done: the hoist is 1.34x, and bit-for-bit identical — 2026-10-03
+
+H1 and H2 are implemented (commit); H3 (the Bessel threshold) is folded into the
+GSL item below. The expressions were copied verbatim and the multiply order kept,
+so the change was expected to be numerically *exact* — and it is:
+
+| build, 8x4 cold on ccc0497 | wall |
+| --- | --- |
+| `mkl-fix` (before) | 361 s |
+| `hoist` (after) | **269 s** |
+
+- **[measured] 1.34x on the end-to-end run**, deuteron unchanged at
+  -2.22434846 MeV, `accept.py` PASS with the same 2.2e-06 worst element.
+- **[measured] The output `.me3j` is bit-for-bit identical** to the `mkl-fix`
+  run — all 456 320 elements. This is the cleanest possible verification: the
+  refactor changed only how many times the arithmetic is done, not the arithmetic.
+- **[measured] Combined with the relink, this case is now 2.84x faster than this
+  morning**: 765 s (reference BLAS) -> 269 s (MKL + hoist), same node and config.
+
+Re-profiled with the same method (job 11142055; phase wall 128 s -> 83 s, so the
+absolute column below scales the percentages by that factor):
+
+| object | before | after | note |
+| --- | --- | --- | --- |
+| libm.so.6 | 40.0 s (31.3 %) | 9.5 s (11.4 %) | `exp` no longer appears at all |
+| **libgomp (barriers)** | 31.5 s (24.6 %) | **32.3 s (38.9 %)** | **unchanged in absolute terms** |
+| libmkl_def.so.2 | 13.6 s (10.6 %) | 14.3 s (17.2 %) | |
+| NuHamil_serial.exe | 23.3 s (18.2 %) | 13.2 s (15.9 %) | |
+| libgsl.so.28 | 10.7 s (8.4 %) | 9.8 s (11.8 %) | |
+| libgcc_s (`__powidf2`) | 6.1 s (4.8 %) | 1.0 s (1.2 %) | |
+
+- **[measured] The hoist removed ~45 s, essentially all of it from libm and
+  `__powidf2`** — exactly as predicted, and the phase is 1.54x faster.
+- **[measured] Barrier time did not move.** It is the same ~32 s as before; it only
+  became the largest share because everything around it shrank. That is worth
+  stating plainly, because a rising percentage is easy to misread as a regression.
+- **[inferred] The ranking is now unambiguous and there is no longer a big single
+  target.** Barriers ~39 %, MKL ~17 %, our physics ~16 %, GSL Bessel ~12 %
+  (~10 s), libm ~11 % (down from 40 s). The next move is the structural one P3
+  already planned; the arithmetic is no longer where the time is.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing

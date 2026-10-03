@@ -145,20 +145,20 @@ The re-profile resets the target list. By cycles: **libm + integer power ~36 %**
 **OpenMP barriers ~24.6 %**, our own physics 18.2 %, MKL BLAS 10.6 %, GSL Bessel
 8.4 %. The work is no longer "make the arithmetic faster" — MKL did that — but:
 
-- [ ] **Transcendental math (~36 %) — located, and all of it is hoistable.**
-      Three loop-invariant calls, detailed in `FINDINGS.md`: (a)
-      `non_local_regulator` (`NNNForceHOIsospin.F90:372`) recomputes
-      `exp(-(...)**RegulatorPower)` over the 500x500 mesh **per matrix element**
-      when it depends only on the mesh indices — precompute the `W(i,k)` table;
-      (b) `local_regulator` is a pure function of the p-mesh index but is called
-      from inside the `x`/`i` loops; (c) `spherical_bessel` recomputes an `exp`
-      and two `log`s per call for a threshold that depends only on `l`. **No
-      vectorisation is needed.** Verify with the deuteron anchor + `accept.py`,
-      then A/B the end-to-end wall on one node (~6 min/run now).
-- [ ] **Barriers (~24.6 %)** — the unchanged P3 target and the biggest structural
-      item. This is where the farm redesign and the O(sum dim^2) result
-      redistribution pay off.
-- [ ] GSL Bessel (8.4 %) — recursions instead of per-call evaluation.
+- [x] **Transcendental math — done, 1.34x, output bit-for-bit identical.** Hoisted
+      three loop-invariant calls (`non_local_regulator`'s 500x500 `exp`/`pow`, the
+      `local_regulator`/weight/denominator p-mesh factors, and the `f1_func`/
+      `f2_func` mesh sums) into tables. 8x4 cold on ccc0497: **361 s -> 269 s**,
+      deuteron unchanged, `.me3j` identical in all 456 320 elements. Combined
+      with the relink that is **2.84x** on this case. See `FINDINGS.md`
+- [ ] **Barriers (~38.9 %, ~32 s — and unmoved by the hoist)** — now the single
+      largest cost in absolute terms and the only item of its size. This is where
+      the farm redesign and the O(sum dim^2) result redistribution pay off.
+      *(The percentage rose only because libm shrank; the seconds did not.)*
+- [ ] GSL Bessel (~11.8 %, ~10 s) — the largest remaining arithmetic item.
+      Recursions instead of per-call `gsl_sf_bessel_jl`, plus the per-call `exp`
+      /two `log`s in `spherical_bessel`'s threshold (`MyLibrary.F90:1013`), which
+      depend only on `l`.
 - [ ] Attribution with `papi/7.1.0` + per-rank timers
 - [ ] Re-architect the master–worker farm: cost-weighted tiles, decentralised
       queue, point-to-point result return, drop barriers, overlap comm/compute
