@@ -96,9 +96,11 @@ contains
     type(EigenSolSymD) :: diag
     integer :: ndim
     type(sys) :: s
+    real(8) :: t0, tc, td
 
 
     jac => this%jacobi_ch_ket
+    t0 = omp_get_wtime()
     !call relspin%init(jac%GetFrequency(), jac%GetNmax(), params%J2max_NNint)
     call relspin%init(jac%GetFrequency(), params%N2max, params%J2max_NNint)
     !call rel%init(jac%GetFrequency(), jac%GetNmax(), params%Jmax2)
@@ -139,6 +141,7 @@ contains
       call set_genuine_three_body_interaction(v3n_jac,params)
     end if
     h = T_jac%DMat + vnn_jac%DMat + v3n_jac%DMat
+    tc = omp_get_wtime()
 
     call diag%init(h)
     call diag%DiagSym(h)
@@ -146,6 +149,7 @@ contains
     write(*,"(a, i4, a, 5f12.6)") "myrank=", myrank, ", Eigen values of original 3-body H:    ", &
         & diag%eig%v(1:ndim)
     call diag%fin()
+    td = omp_get_wtime()
     if(params%renorm%val == 'srg') then
       select case( params%srg_generator%val )
       case( "kinetic" )
@@ -155,6 +159,7 @@ contains
       end select
       call three_body_srg_evolution(h, Generator, U%DMat, params%lambda, params%Nmax_srg_edge)
     end if
+    write(*,'(a,3f12.3)') '#PROF_PHASE construct/diag/srg=', tc-t0, td-tc, omp_get_wtime()-td
     this%DMat = h - T_jac%DMat - vnn_sub_jac%DMat
     call v3n_jac%fin()
     call vnn_jac%fin()

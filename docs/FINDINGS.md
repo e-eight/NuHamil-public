@@ -1203,6 +1203,51 @@ Phase wall for one channel, same node: **114 s (1 thread), 72 s (2), 71 s (4)**.
   fine units, 32x1 would approach the 95.9 s ideal, i.e. ~1.5x over the best
   configuration available today, and it needs one node rather than two.
 
+## What a work unit actually contains — and a correction — 2026-10-03
+
+Before starting the granularity work I read the unit and instrumented it, because
+the design depends entirely on what is inside a unit. **I had been describing the
+unit as a loop over (bra,ket) blocks. It is not.** `set_nnn_force_ho_isospin`
+(`NNNForceHOIsospin.F90:78`) builds whole-channel operators, forms
+`h = T_jac + vnn_jac + v3n_jac`, **dense-diagonalises `h`**, and — for this case,
+where `renorm = srg` — runs a **three-body SRG evolution** on it. Neither a dense
+eigensolve nor an ODE integration is a trivially splittable loop, so the plan I
+had been proposing for several turns rested on a wrong mental model.
+
+### Measured composition (`#PROF_PHASE`, 32 units, 1 thread, ccc0497)
+
+| phase | total | share |
+| --- | --- | --- |
+| operator construction | 2468.5 s | **91.5 %** |
+| SRG evolution | 226.4 s | 8.4 % |
+| dense diagonalisation | 4.5 s | **0.2 %** |
+
+- **[measured] The thing I was most worried about is negligible.** The dense
+  diagonalisation is 4.5 s across all 32 units; the largest single one is 0.79 s.
+  A distributed eigensolver is not needed and was never going to be needed.
+- **[measured] The dominant 91.5 % is the operator construction**, i.e.
+  `set_nnn_int_chEFT_n2lo_isospin`, which fills an `nphys x nphys` matrix and
+  whose local-3NF routines (`set_two_pion_exchange_c*`, `set_contact_ce`, ...)
+  iterate over channel pairs. **This part is block-structured**, which is what the
+  refactor needs.
+- **[inferred] So the refactor is viable, but for the opposite reason to the one I
+  gave.** Not "the unit is a block loop"; rather "the dominant phase is
+  block-structured, and the parts that are not are cheap".
+- **[inferred] The design constraint is the gather.** After `work` is filled,
+  `set_nnn_interaction_chEFT_n2lo` does `this%DMat = cfp^T * work * cfp` and then
+  `multiply_non_local_regulator_hospace` — both need the *full* `work`. A split
+  unit therefore has to gather before those steps, and the gather + transform +
+  SRG is ~9 % of a unit, capping the available speedup near 11x. That is well
+  above the 1.54x target, so it does not threaten the plan.
+- Two side notes: the channel-independent two-body NN setup inside the unit is
+  **0.00 %** (duplicating it per sub-unit costs nothing), and
+  `set_nnn_interaction_chEFT_n2lo` itself uses the very copy-heavy DMat pattern
+  just fixed in `transform_xis_to_ho` (`cfp = jac%GetCFPMat()` then
+  `this%DMat = cfp%T() * work * cfp`) — a cheaper target than the refactor, and
+  one we can name.
+
+`#PROF_PHASE` is left in place alongside `#PROF_UNIT`.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
