@@ -1282,6 +1282,93 @@ had been proposing for several turns rested on a wrong mental model.
   (`cfp = jac%GetCFPMat()` then `this%DMat = cfp%T() * work * cfp`) — though that
   was later measured as worthless too (see "Second attempt").
 
+## The memory hypothesis for `ramplarge` is REFUTED — 2026-10-03
+
+Tested because the recorded explanation for `ramplarge` being ~770x slower per
+channel was "memory", and because a physics problem and a resource-request problem
+need different fixes. Three forms of the hypothesis, all unsupported.
+
+### H1 — the runs were throttled by their cgroup limit: **refuted**
+
+Slurm records for the three `ramplarge` attempts (`sacct`, step MaxRSS = max over
+tasks):
+
+| job | config | node | peak RSS/rank | total peak | request | used | outcome |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 11113167 | 32x1 | ccc0259 | 20.48 GiB | ~655 GiB | 200 G | **328 %** | **OUT_OF_MEMORY** |
+| 11117512 | 8x1 | ccc0498 | 20.74 GiB | 166 GiB | 250 G | 66 % | cancelled at 3:04 |
+| 11119503 | 8x4 | ccc0499 | 33.64 GiB | 269 GiB | 450 G | 60 % | cancelled at 10:19 |
+
+- **[measured] Neither 8-rank run was near its limit** — 60 % and 66 %. Only the
+  32-rank run exceeded, and that is the already-recorded `--mem=200G` request error
+  (655 GiB needed), not a hardware ceiling.
+- **[inferred] The mechanism does not fit either.** A cgroup memory limit produces
+  **OOM-kill**, not gradual slowdown — and that is exactly what the one run that
+  exceeded did. We have never observed the intermediate "slow because pressured"
+  behaviour that the hypothesis requires.
+
+### H2 — the large per-rank footprint is itself slow: **refuted, and the thread evidence points the other way**
+
+| config | peak RSS/rank | |
+| --- | --- | --- |
+| 8x1 | 20.74 GiB | 1 thread |
+| 8x4 | 33.64 GiB | 4 threads — **1.62x more memory** |
+
+- **[measured] More threads cost more memory and *less* time.** On `rampsmall`,
+  32x1 = 215 s vs 16x2 = 103 s. Going to threads increased peak RSS by ~1.6x and
+  halved the wall time. Footprint is not the limiting factor in the observed range.
+
+### H3 — memory grows during the run (all-to-all redistribution), so late channels suffer: **refuted**
+
+- **[measured] Peak RSS is flat across rank count on `rampsmall`**: 1652.6 MB (8x1),
+  1653.0 MB (32x1), 1655.9 MB (8x4). If every rank accumulated all other ranks'
+  matrices, peak RSS would grow with the number of ranks. It does not.
+- **[measured] And the redistribution is 0.031 s of 267.8 s** — negligible in time.
+
+### Direct experiment: memory headroom, doubled, changes nothing
+
+Same case, same node, same binary, same configuration (16x2, ccc0499), only the
+allocation differs:
+
+| `--mem` | headroom | wall |
+| --- | --- | --- |
+| 32 G | ~18 % (peak 1.63 GiB/rank x 16 = 26.1 GiB) | **108 s** |
+| 64 G | ~59 % | **109 s** |
+
+- **[measured] Doubling the available memory changes wall time by 1 %** — inside the
+  usual run-to-run spread. There is no memory-headroom sensitivity to explain the
+  `ramplarge` behaviour.
+
+### Two corrections this test produced
+
+1. **My own P3b-i plan's trap #1 was backwards.** I wrote that the 2/32 channels
+   which completed in the 10:19 run "were almost certainly Nmax 24" (the cheapest).
+   They were **Nmax 40 — the heaviest**, because the farm builds its unit list as
+   `do t; do j = 1, jmax3; do p`, so **low J (largest Nmax) is dispatched first**.
+   The `ops/` file times give 5.37 h and 7.00 h for `j1p-t1` and `j1p+t1`. That is
+   the solid number for a heavy `ramplarge` channel.
+2. **The recorded "~770x per channel" is not a like-for-like ratio** and should not
+   be used as one: it compared `rampsmall` 32/32 in 13:04 against `ramplarge` 2/32
+   in 10:19:31, i.e. different configurations *and* different channel mixes. The
+   defensible statement is per-channel and same-configuration.
+
+### What is left: the state dimension, and it fits
+
+| channel | `rampsmall` orthonormal states | `ramplarge` | ratio | **cubed** |
+| --- | --- | --- | --- | --- |
+| `j1p+t1` | 632 | 4263 | 6.74 | **307x** |
+| `j5p+_t1` (heaviest each ramp) | 1503 | 11340 | 7.54 | **429x** |
+
+- **[measured]** The heaviest `rampsmall` channel (`j5p+_t1`, 4510 physical states,
+  Nmax 20) takes **202.7 s** single-threaded; note the heaviest channel is **not**
+  the lowest J — dimension grows with J faster than the ramp shrinks Nmax.
+- **[inferred] The SRG flow is O(n^3) per ODE right-hand side**, and `n` grows by
+  ~7x, so n^3 alone gives **300-430x** on that term while the rest of a channel
+  scales more gently. On `rampsmall` the SRG was measured at **8.4 % of a unit**;
+  a ~300-400x term inside that would make the SRG a **dominant** share of a
+  `ramplarge` channel. **That is a prediction, and it is exactly what P3b-i stage 1
+  is designed to test** — it is not established here.
+
 ## The two-body NN SRG flow is re-run in every three-body channel — 2026-10-03
 
 Raised as: "the SRG flow for `ramplarge` was excruciatingly slow; I think we
