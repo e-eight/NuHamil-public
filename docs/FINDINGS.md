@@ -1275,12 +1275,69 @@ had been proposing for several turns rested on a wrong mental model.
   unit therefore has to gather before those steps, and the gather + transform +
   SRG is ~9 % of a unit, capping the available speedup near 11x. That is well
   above the 1.54x target, so it does not threaten the plan.
-- Two side notes: the channel-independent two-body NN setup inside the unit is
-  **0.00 %** (duplicating it per sub-unit costs nothing), and
-  `set_nnn_interaction_chEFT_n2lo` itself uses the very copy-heavy DMat pattern
-  just fixed in `transform_xis_to_ho` (`cfp = jac%GetCFPMat()` then
-  `this%DMat = cfp%T() * work * cfp`) — a cheaper target than the refactor, and
-  one we can name.
+- ~~Two side notes: the channel-independent two-body NN setup inside the unit is
+  **0.00 %** (duplicating it per sub-unit costs nothing)~~ — **RETRACTED, see below.**
+  That was the routine's *self* time; and `set_nnn_interaction_chEFT_n2lo` itself
+  uses the very copy-heavy DMat pattern just fixed in `transform_xis_to_ho`
+  (`cfp = jac%GetCFPMat()` then `this%DMat = cfp%T() * work * cfp`) — though that
+  was later measured as worthless too (see "Second attempt").
+
+## The two-body NN SRG flow is re-run in every three-body channel — 2026-10-03
+
+Raised as: "the SRG flow for `ramplarge` was excruciatingly slow; I think we
+discovered the flow was being repeated — did we ever address that?" **Answer: no,
+it was never addressed, and neither `FINDINGS.md` nor `PLAN.md` contains any record
+of the discovery.** The memory needs re-establishing from the code, which is what
+follows.
+
+**The repetition is real, and it is 32x.**
+
+- `set_nnn_force_ho_isospin` (per three-body channel) builds the two-body pieces at
+  `NNNForceHOIsospin.F90:104-116`, including
+  `call vnn_sub_relspin%SetNNForceHOIsospin(U_sub_relspin, params)`.
+- With `renorm = "srg"` and `renorm_space2 = "ho"` — our input sets the first and
+  the second is the default — `NNForceIsospin.F90:215` takes the branch
+  `call renorm_ho_space_isospin(...)`.
+- That routine (`:317`) contains
+  ```fortran
+  do ich = 1, two%NChan
+    call HOSRGChannel(vnn%MatCh(ich), Trs%MatCh(ich), vnn%ms%jpst(ich), alpha, hw, ...)
+  end do
+  ```
+  and `HOSRGChannel` runs a full SRG H-flow via `Renormalization`'s `SRGSolver`
+  (`sol%init(h, 'Hflow')` -> `SRGFlow` -> `SRGHflow` -> `dvode_f90`).
+- **The two-body space does not depend on the three-body channel**: `relspin%init`
+  uses `params%N2max` and `params%J2max_NNint`, not the channel's `Nmax`
+  (`NNNForceHOIsospin.F90:105`). So all 32 repetitions compute **identical** results
+  and are trivially cacheable.
+
+**[inferred] Profile consistency**: exactly one SRG symbol family appears —
+`__renormalization_MOD_srghflow` plus `dvode_f90_m` (dvstep 0.14 %, dvnlsd 0.13 %,
+...) — and **no `srghuflow` / `srgomegaflow`**. That is consistent with
+`HOSRGChannel` using mode `'Hflow'`, and it means the two-body and three-body flows
+share the same symbol, so the flat profile cannot apportion them.
+**[inferred]** Most of a flow's cost is inside its ODE right-hand side (a dgemm
+commutator) and the two `DiagSym` calls at the end of `SRGHflow`, i.e. attributed
+to MKL, not to an SRG symbol. **So neither the flat profile nor `#PROF_PHASE` sizes
+this repetition — it must be timed directly.**
+
+**Does it explain `ramplarge`? Not obviously.** The two-body space is fixed by
+`N2max` / `J2max_NNint`, which do not scale with the three-body ramp, so the 32x NN
+redundancy costs about the same at both ramps. The `ramplarge` blow-up
+(770x per channel vs `rampsmall`) is more likely the **three-body** H-flow: its ODE
+state is `n(n+1)/2` and each RHS evaluation is O(n^3), with two more O(n^3)
+diagonalisations at the end, and `n` grows with the channel's `Nmax` — which the
+ramp raises directly. Both remain to be measured; neither is established.
+
+**Retraction.** The earlier note that the channel-independent two-body NN setup was
+"0.00 %" used the routine's self time and is therefore wrong: the cost lives in its
+callees. Recording it rather than deleting it, since it was used to justify a
+design conclusion.
+
+**Next:** instrument `renorm_ho_space_isospin` / `HOSRGChannel` inside
+`set_nnn_force_ho_isospin` to size the 32x repetition on `rampsmall`, and time the
+three-body `SRGHflow` on `ramplarge` to see whether that is where the ramp
+blow-up actually lives.
 
 `#PROF_PHASE` is left in place alongside `#PROF_UNIT`.
 
