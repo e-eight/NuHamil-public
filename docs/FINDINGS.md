@@ -609,6 +609,9 @@ so the change was expected to be numerically *exact* — and it is:
 - **[measured] The output `.me3j` is bit-for-bit identical** to the `mkl-fix`
   run — all 456 320 elements. This is the cleanest possible verification: the
   refactor changed only how many times the arithmetic is done, not the arithmetic.
+  **See the correction further down:** bit-identity is not a stable property of this
+  code (two same-configuration runs can differ by 2.8e-07), so read this as strong
+  evidence rather than proof.
 - **[measured] Combined with the relink, this case is now 2.84x faster than this
   morning**: 765 s (reference BLAS) -> 269 s (MKL + hoist), same node and config.
 
@@ -718,6 +721,122 @@ so every rank leaves at essentially the same instant. The farm time in the logs
 therefore measures the makespan, not the per-rank workload. Deriving "imbalance"
 from these logs would be a mistake; it needs unit-count data from the master's
 `slranks` array or added per-rank timers.
+
+## Thread-vs-rank at fixed 32 CPUs, after the hoist: 16x2 is now the optimum — 2026-10-03
+
+The earlier "threads beat ranks by 1.15x" result was measured *before* MKL and
+before the hoist. Re-measured with the `hoist` binary, same case, all three cold
+on ccc0497 with exactly 32 CPUs, all `accept.py` PASS:
+
+| ranks x threads | wall | notes |
+| --- | --- | --- |
+| 8 x 4 | 269 s | worst |
+| **16 x 2** | **206 s** | **best** |
+| 32 x 1 | 254 s | |
+
+- **[measured] The optimum moved.** Everything is on one node with the same 32
+  CPUs, so this is purely how the work is shaped, not hardware.
+- **[inferred] The three configurations fail for three different reasons**, which
+  is why the optimum is in the middle:
+  - **8x4** is limited by the ~35 % serial fraction (`gomp_barrier_wait` analysis
+    above): 4 threads give only ~1.94x, and only 7 of the 8 ranks compute.
+  - **32x1** has no thread loss but only 32 work units, so the makespan is set by
+    the single slowest channel; pre-hoist the imbalance at 32x1 was 1.491.
+  - **16x2** sits between: 2 threads lose less to Amdahl
+    (`1/(0.35 + 0.65/2) = 1.48`), and 32 units over 15 workers smooths the
+    granularity.
+- **[inferred] Superseded conclusion, with a mechanism.** The hoist removed
+  parallel work, which *raised* the relative serial fraction, which made threads
+  comparatively less attractive and pushed the optimum toward more ranks. This is
+  the second time in this work that an optimisation changed the best
+  *configuration* as a side effect — the first being MKL changing which node
+  looked fastest.
+- **Consequence for P3:** if units were finer, 32x1 would become the best
+  configuration, because it avoids *both* the thread (Amdahl) loss and the
+  granularity loss. Fine-grained units are therefore the MPI-side lever, and
+  `16x2` is the configuration to use until that exists. Any further performance
+  comparison must state the ranks x threads it used.
+
+## Granularity costs 1.87x at 32 ranks, measured unit by unit — 2026-10-03
+
+The farm previously could not report this at all (see the log caveat above), so
+`#PROF_UNIT` lines were added to `MPIFunction.F90`: every rank prints the id and
+wall time of each unit it computes. This is the instrumentation, running, and
+answering the question.
+
+Instrumented 32x1 run (`units` build), same case and node: **wall 254 s**, exactly
+the uninstrumented 32x1 — the timing is free.
+
+The heavy farm's 32 units, in one-thread seconds:
+
+| quantity | value |
+| --- | --- |
+| total work | 4211.8 s |
+| mean unit | 131.6 s |
+| **max unit** | **249.4 s** |
+| min unit | 88.8 s |
+| **max / mean** | **1.895** |
+| ideal makespan, perfect splitting, 31 workers | 135.9 s |
+| **actual** | **254 s** = **1.87x** |
+
+- **[measured] Unit costs span 2.8x (88.8 -> 249.4 s).** At 32 ranks each worker takes
+  one unit, so the makespan *is* the heaviest channel: 249.4 s of the 254 s wall. The
+  dynamic farm cannot help when ntotal ~ nworkers; it is not a scheduling failure.
+- **[measured] Perfect splitting would give ~136 s**, so there is **~1.87-1.93x** of
+  headroom at 32x1, which would also beat the current best configuration (16x2,
+  206 s) by ~1.5x.
+- **[measured] The other two farms in the same run total 10.7 s of unit time** —
+  negligible, consistent with the timer table.
+- **[inferred] `max/mean` rose from 1.491 pre-hoist to 1.895.** The hoist removed work
+  (`exp`/`pow`) that had been spread fairly evenly across all channels, leaving the
+  cost more unevenly distributed. That is the mechanism behind 8x4 and 32x1 swapping
+  places in the thread-vs-rank table above.
+- **[inferred] Cost-ordered dispatch would not help.** With 31 workers and 32 units
+  every unit is dispatched on the first round, so no ordering can change the makespan.
+  Only finer units can.
+
+**Consequence.** Subdividing `calc_each_channel` (`TMTransFunctions.inc:70`) into
+row-block units is the single highest-value MPI change, worth ~1.9x at 32 ranks and
+~1.5x over the current best configuration. It is also the only P3 item that is.
+
+## The output is NOT bit-reproducible, even at a fixed configuration — 2026-10-03
+
+Found while checking whether the new `#PROF_UNIT` instrumentation perturbed
+anything. Two runs of the **same binary at the same configuration** (32 ranks x 1
+thread, cold, ccc0497, case `3bme_e3max6__rampsmall`) were compared directly:
+
+| | |
+| --- | --- |
+| values compared | 456 320 |
+| **values that differ** | **33 365 (7.3 %)** |
+| max abs difference | 2.4e-07 |
+| max abs value | 0.872 |
+| **relative difference** | **2.8e-07** |
+| wall time | 254 s vs 258 s (1.6 %) |
+
+- **[measured] The two runs are not bit-identical.** 7.3 % of the elements differ at
+  the 7th significant digit, and the wall time itself moves by 1.6 %. So neither the
+  numbers nor the timings are reproducible to the bit at fixed configuration.
+- **[inferred] The likely source is the nondeterministic dispatch order of the dynamic
+  farm** interacting with state reused across units, or an accumulation order that
+  varies. It is *not* isolated yet, and is worth isolating, because "reproducible" is
+  load-bearing for this project's verification story.
+
+### Correction: an earlier claim in this file was too strong
+
+The hoist section above records that the hoisted `.me3j` was "bit-for-bit identical"
+to the pre-hoist run across all 456 320 elements. **That observation was real, but it
+was not the proof it was presented as.** Bit-identity is not a stable property of this
+code: a same-configuration comparison can differ by 2.8e-07 (above), so a single
+bit-match between two runs is partly luck of the FP draw and cannot establish that a
+refactor is arithmetically exact.
+
+The hoist remains well supported — the deuteron is unchanged, `accept.py` passes with
+the same worst element, and the change was designed to preserve both values and
+multiply order — but it should be read as *strong evidence*, not *proof*. The right
+verification for this code is the tolerance-based `bench/accept.py` plus the deuteron
+anchor, which is exactly why the project retired `.me3j` hashing. This finding
+independently confirms that decision was correct.
 
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 

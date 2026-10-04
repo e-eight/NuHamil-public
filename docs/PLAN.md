@@ -158,11 +158,21 @@ The re-profile resets the target list. By cycles: **libm + integer power ~36 %**
       `schedule(dynamic)`, and fusing ~60 regions into 4 all left it unchanged.
       **Do not retry these**; the OpenMP side has at most ~1.94x available and the
       idle is not recoverable by tuning. Changes were reverted as neutral.
-- [ ] **Remaining P3 lever: the MPI farm** (now the only item of its size).
-      Threads are capped by Amdahl at ~1.94x, so scaling must come from ranks —
-      consistent with ranks beating threads by 1.15x at constant CPU count.
-      Concretely: subdivide the 32 whole-channel work units, drop the
-      O(sum dim^2) all-to-all redistribution, and give rank 0 work.
+- [ ] **Remaining P3 lever: finer work units — measured at 1.87x.** Instrumented the
+      farm (`#PROF_UNIT` in `MPIFunction.F90`) and read the real unit costs: they span
+      **2.8x (88.8-249.4 s**, max/mean 1.895), so at 32 ranks the makespan *is* the
+      heaviest channel — 254 s measured vs ~136 s with perfect splitting. Subdivide
+      `calc_each_channel` (`TMTransFunctions.inc:70`) into row-block units. Cost-ordered
+      dispatch cannot help: all 32 units are dispatched on the first round with 31
+      workers, so no ordering changes the makespan.
+- [x] ~~Drop the O(sum dim^2) redistribution~~ **Deprioritised by measurement.** It is
+      0.031 s of a 267.8 s run — a memory concern for production sizes, not a time one.
+- [x] ~~Give rank 0 work~~ **Bounded and small.** Rank 0 never calls `Method`, so only
+      `nprocs-1` ranks compute; that is worth `nprocs/(nprocs-1)` = 14.3 % at 8 ranks and
+      3.2 % at 32, and cannot explain the scaling loss (which would need `T ~ 1/(nprocs-1)`).
+- **Configuration to use now: `16x2`.** At the same 32 CPUs on ccc0497: 206 s (16x2) vs
+      254 s (32x1) vs 269 s (8x4). This *reverses* the pre-hoist result that threads beat
+      ranks — see `FINDINGS.md`. Every performance claim must state ranks x threads.
 - [ ] GSL Bessel (~11.8 %, ~10 s) — the largest remaining arithmetic item.
       Recursions instead of per-call `gsl_sf_bessel_jl`, plus the per-call `exp`
       /two `log`s in `spherical_bessel`'s threshold (`MyLibrary.F90:1013`), which

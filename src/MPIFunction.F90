@@ -21,6 +21,7 @@ contains
     integer, allocatable, intent(inout) :: slranks(:)
     integer :: num_loops
     real(8), intent(out) :: time
+    real(8) :: t0
 #ifdef MPI
     integer :: i
 #endif
@@ -28,9 +29,17 @@ contains
     if(.not.allocated(slranks)) allocate(slranks(ntotal))
     slranks = 0
     time = 0.d0
+    ! Per-unit timing.  The farm time reported elsewhere is the makespan -- every
+    ! rank exits in the master's finalize sweep -- so it cannot show how unequal
+    ! the work units are or how they were split across ranks.  These lines are
+    ! the only view of the unit cost distribution, and subdividing units (or
+    ! ordering them) needs exactly that.
     if(nprocs==1) then
       do num_loops=1, ntotal
+        t0 = omp_get_wtime()
         call Method(num_loops)
+        write(*,'(a,i6,a,i6,a,f12.3)') '#PROF_UNIT rank=', myrank, &
+            & ' unit=', num_loops, ' sec=', omp_get_wtime()-t0
       end do
       return
     end if
@@ -63,7 +72,10 @@ contains
         call mpi_recv(num_loops,1,mpi_integer,0,1,mpi_comm_world,istatus,ierr)
         if(num_loops == 0) exit
 #endif
+        t0 = omp_get_wtime()
         call Method(num_loops)
+        write(*,'(a,i6,a,i6,a,f12.3)') '#PROF_UNIT rank=', myrank, &
+            & ' unit=', num_loops, ' sec=', omp_get_wtime()-t0
       end do
     end if
 #ifdef MPI
@@ -87,15 +99,24 @@ contains
     integer, intent(in) :: ntotal
     integer :: num_loops, n_run
     real(8), intent(out) :: time
+    real(8) :: t0
     integer :: i_recv
 #ifdef MPI
     integer :: i
 #endif
 
     time = 0.d0
+    ! Per-unit timing.  The farm time reported elsewhere is the makespan -- every
+    ! rank exits in the master's finalize sweep -- so it cannot show how unequal
+    ! the work units are or how they were split across ranks.  These lines are
+    ! the only view of the unit cost distribution, and subdividing units (or
+    ! ordering them) needs exactly that.
     if(nprocs==1) then
       do num_loops=1, ntotal
+        t0 = omp_get_wtime()
         call Method(num_loops)
+        write(*,'(a,i6,a,i6,a,f12.3)') '#PROF_UNIT rank=', myrank, &
+            & ' unit=', num_loops, ' sec=', omp_get_wtime()-t0
       end do
       return
     end if
@@ -134,7 +155,10 @@ contains
         call mpi_recv(num_loops,1,mpi_integer,0,1,mpi_comm_world,istatus,ierr)
         if(num_loops == 0) exit
 #endif
+        t0 = omp_get_wtime()
         call Method(num_loops)
+        write(*,'(a,i6,a,i6,a,f12.3)') '#PROF_UNIT rank=', myrank, &
+            & ' unit=', num_loops, ' sec=', omp_get_wtime()-t0
       end do
     end if
 #ifdef MPI
