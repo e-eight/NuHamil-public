@@ -1297,41 +1297,65 @@ contains
     type(Coordinates), intent(in) :: xis(:)
     integer :: n, l, i
     real(8) :: nu
+    real(8) :: t0, tt(14)
+    !
+    ! #PROF_PRE: which part of precalculations costs the ~20 s it spends in every
+    ! channel?  This routine runs once per channel, and the coupling stores and
+    ! most tables depend only on Nmax (only jjx takes Jtot), so a per-channel
+    ! rebuild of channel-independent work is the suspect.  See PLAN.md, P3-rows
+    ! "new lead", and FINDINGS.md.
     ! ( j1 j2 | j12 )
     ! (  0  0 |   0 )
+    t0 = omp_get_wtime()
     call CGs%init(0,2*Nmax+2,0,2*Nmax+2)
+    tt(1) = omp_get_wtime() - t0
 
     ! {   X l12' l12 }
     ! { S12 j12  j12'}
+    t0 = omp_get_wtime()
     call lsj12%init(0,2*Nmax+4,.false., 0,2*Nmax,.false., 0,2,.false., j12dmax_in=2*Nmax, j23dmax_in=2*Nmax+2)
+    tt(2) = omp_get_wtime() - t0
 
     ! {   X l3' l3 }
     ! { 1/2 j3  j3'}
+    t0 = omp_get_wtime()
     call lsj3%init(0,2*Nmax+4,.false., 0,2*Nmax,.false., 1,1,.true., j12dmax_in=2*Nmax, j23dmax_in=2*Nmax+1)
+    tt(3) = omp_get_wtime() - t0
 
     ! {   X j12 j12' }
     ! {Jtot j3'   j3 }
+    t0 = omp_get_wtime()
     call jjx%init(0,2*Nmax+4,.false., 0,2*Nmax+2,.false., Jtot,Jtot,.true., j12dmax_in=2*Nmax+2, j23dmax_in=2*Nmax+1)
+    tt(4) = omp_get_wtime() - t0
 
     ! {  K1  K2  X }
     ! {   Y   R  Z }
+    t0 = omp_get_wtime()
     call kkxy%init(0,4,.false., 0,4,.false., 0,2*Nmax+4,.false.)
+    tt(5) = omp_get_wtime() - t0
 
     ! {   X    K    Z }
     ! { l12  S12  j12 }
     ! { l12' S12' j12'}
+    t0 = omp_get_wtime()
     call ls12%init(0,2*Nmax+4,.false., 0,4,.false., 0,2*Nmax,.false., 0,2,.false., j13dmax_in=2*Nmax, jdmax_in=2*Nmax+2)
+    tt(6) = omp_get_wtime() - t0
 
     ! {   X    K    Z }
     ! {  l3  1/2   j3 }
     ! {  l3' 1/2   j3'}
+    t0 = omp_get_wtime()
     call ls3%init(0,2*Nmax+4,.false., 0,4,.false., 0,2*Nmax,.false., 1,1,.true., j13dmax_in=2*Nmax, jdmax_in=2*Nmax+1)
+    tt(7) = omp_get_wtime() - t0
 
     ! {  1/2 1/2   S1 }
     ! {  1/2 1/2   S2 }
     ! {   S3  S4    S }
+    t0 = omp_get_wtime()
     call spin12%init(1,1,.true., 1,1,.true., 1,1,.true., 1,1,.true.)
+    tt(8) = omp_get_wtime() - t0
 
+    t0 = omp_get_wtime()
     call gauss_legendre(rmin, rmax, r_mesh, rw_mesh, NMesh_r)
     allocate(radial_ho_wf(NMesh_r, 0:Nmax/2, 0:Nmax))
     !nu = 2.d0 * amp * amn * hw / ( (amp + amn) * hc**2 )
@@ -1347,11 +1371,30 @@ contains
 
     call gauss_legendre(pmin, pmax, p_mesh, pw_mesh, NMesh_p)
     call gauss_legendre(-1.d0, 1.d0, cos_mesh, cosw_mesh, NMesh_cos)
+    tt(9) = omp_get_wtime() - t0
+
+    t0 = omp_get_wtime()
     call init_p_mesh_tables(lambda, power)
+    tt(10) = omp_get_wtime() - t0
+
+    t0 = omp_get_wtime()
     call init_z0_function(lambda, power)
+    tt(11) = omp_get_wtime() - t0
+
+    t0 = omp_get_wtime()
     call init_zx_function(lambda, power, xis, Nmax+2)
+    tt(12) = omp_get_wtime() - t0
+
+    t0 = omp_get_wtime()
     call init_fk_function(lambda, power)
+    tt(13) = omp_get_wtime() - t0
+
+    t0 = omp_get_wtime()
     call init_fkx_function(lambda, power, xis, Nmax+2)
+    tt(14) = omp_get_wtime() - t0
+
+    write(*,'(a,14f9.3)') &
+        & '#PROF_PRE cg lsj12 lsj3 jjx kkxy ls12 ls3 spin12 meshwf ptbl z0 zx fk fkx=', tt(1:14)
 
   end subroutine precalculations
 

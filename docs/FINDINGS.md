@@ -1305,6 +1305,53 @@ a zero-size actual keeps the assumed-shape dummy legal.
   *not* mean revert — unlike `-march` and the `chEFT_n2lo` copy rewrite, which added
   a constraint or churn in exchange for nothing.
 
+## The largest single cost in the code: `init_fkx_function` — 2026-10-03
+
+Following the abandoned row-split, the lead was `precalculations`
+(`NNNForceLocal.F90:1293`), which runs once per channel and costs ~20 s. I
+suspected the eight coupling-coefficient store `%init`s, since most depend only on
+`Nmax` and would be rebuilt 32 times. `#PROF_PRE` times every part of it.
+
+Per channel (16x2, ccc0499), seconds:
+
+| part | s | share |
+| --- | --- | --- |
+| **`init_fkx_function`** | **16.64** | **93.0 %** |
+| `ls12%init` | 0.569 | 3.2 % |
+| `init_zx_function` | 0.383 | 2.1 % |
+| `ls3%init` | 0.233 | 1.3 % |
+| `jjx%init` | 0.026 | 0.1 % |
+| `CGs%init` | 0.010 | 0.06 % |
+| `lsj12`, `lsj3`, `kkxy`, `spin12` `%init` | <=0.002 each | ~0 |
+| meshes + `radial_ho_wf` table | 0.001 | ~0 |
+| `init_p_mesh_tables`, `init_z0_function`, `init_fk_function` | 0.000 | ~0 |
+| **total** | **17.9** | |
+
+- **[measured] My suspicion was wrong by two orders of magnitude.** The coupling
+  stores — the "rebuilt 32 times" hypothesis — are **0.84 s together (4.7 %)**,
+  not the cost. `init_fkx_function` is 93 % of it.
+- **[measured] Scaled up: 16.64 s x 32 channels = 533 s, about 19 % of the whole
+  run** (2845.9 s of heavy-farm work). **This is the largest single cost anyone has
+  identified on this project**, and it is one routine.
+- **[measured, cross-check] The flat profile agrees**: `f1_func` 6.21 % +
+  `f2_func` 5.47 % = 11.7 % of the run, and both are called from
+  `init_fkx_function`'s Legendre mesh sums — ~62 % of its cost. The remainder is
+  the Bessel-ladder part at k=0.
+- **[inferred] The 6a/6b math work was aimed at the right place.** The `Pl` table
+  hoist (items 1-2) and the Bessel ladder (6b) were both in
+  `init_fkx_function`; the ladder's k=0 share is now the ~38 % that is *not*
+  `f1_func`/`f2_func`.
+- **[inferred] So the next target is `f1_func`/`f2_func` (11.7 % of the run)**, then
+  the k=0 ladder residue. Neither is approachable by the row-split logic: this is
+  per-channel arithmetic on fixed-size meshes, independent of the matrix
+  dimensions, which is also why `precalculations` costs the same in every channel
+  (18.0-22.9 s, 1.27x spread).
+
+Note the shape of this: three times in this session a phase-level summary
+("construct 91.5 %", "91.5 % of the work", "the coupling stores") pointed at the
+wrong place, and only per-component timing settled it. Timing the smallest named
+parts first would have been cheaper than reasoning about the largest.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
