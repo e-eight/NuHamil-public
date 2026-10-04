@@ -398,6 +398,91 @@ would have fitted on a large node. The OOM was caused by the `--mem=200G` reques
 landing on a 257 GB node, not by a hardware ceiling: the binding constraint was
 our request, and memory is a request rather than a wall.
 
+#### P3b-i — Plan: where does `ramplarge` time actually go?
+
+*Status: planned, not started. Prompted by review: "the SRG flow for `ramplarge`
+was excruciatingly slow." This is measurement only — no change to the flow,
+tolerances or eigensolver until it is done.*
+
+**The question.** Is the *three-body* SRG flow the reason a `ramplarge` channel is
+~770x slower than a `rampsmall` one — and if so, is the cost in the ODE integration
+or in the two dense diagonalisations? The fix differs completely (integrator
+settings/method vs eigensolver), so this must be split **before** anything changes.
+
+**Three traps that make the naive measurement misleading.**
+
+1. **The ramp assigns Nmax per channel by J.** `ramp40-5-36-7-32-9-28-11-24` means
+   `j <= 5 -> 40`, `<= 7 -> 36`, `<= 9 -> 32`, `<= 11 -> 28`, else `24`
+   (`GetRampNmax`, `ThreeBodyJacobiSpaceIso.F90`). The cheap channels finish first,
+   so timers read off a running `ramplarge` job sample only the **cheapest**
+   channels — the 2/32 that completed in 10:19:31 were almost certainly Nmax 24.
+   Any conclusion drawn from them understates the heavy channels.
+2. **The arithmetic does not close.** `rampsmall` does 32/32 channels in 13:04 at
+   8x4, so its channels are minutes; `ramplarge`'s cheapest took ~5 h. A smooth
+   n^3 rise from Nmax 20 to 24 cannot explain that. So either the scaling is
+   structurally steeper, or the slow run was **memory-contended** — 20.5 GiB/rank
+   x 8 ranks = 164 GiB against a 200 GiB cgroup. **These must be separated**: one is
+   a physics/scaling problem, the other a resource-request problem.
+3. **No existing tool attributes a flow.** One SRG symbol family serves both the
+   two- and three-body flows (`srghflow`; no `srghuflow`/`srgomegaflow`), and most
+   of a flow's cost lands in a dgemm commutator plus two `DiagSym` calls —
+   attributed to MKL. Instrumentation must therefore **label which flow** it is
+   reporting.
+
+**Enablers that already exist — no code needed for the ladder.**
+
+- `GetRampNmax` supports a **`flat<NN>`** form, and `ramp` is a namelist input, so
+  `ramp = "flat24"` puts **every** channel at Nmax 24. That is a clean Nmax ladder.
+- `jmax3` is a namelist input and sets `nch = ((jmax3+1)/2)*4`. `jmax3 = 1` gives
+  4 channels (`p = +/-1`, `t = 1,3`) in the heaviest J bucket — a small,
+  representative set for a per-channel measurement.
+- `#PROF_PHASE` already times construct / diag / srg per channel.
+- `SRGHflow` already calls `get_stats(rstats, istats)` and `timer%add`s the flow
+  wall time — **the DVODE statistics are computed and thrown away.**
+
+**Stages.**
+
+1. [ ] **Instrument (one build, ~40 lines, behind the existing `#PROF_*` idiom).**
+       In `SRGHflow`: print `n = size(Hin,1)`, the flow wall time, and the DVODE
+       statistics (`istats`: steps, RHS evaluations); and split the flow's own time
+       into **ODE solve / the two `DiagSym` / the `u` transform**. Label two- vs
+       three-body. *Gate:* the flow's share of a channel, split three ways, plus a
+       step count. No physics change.
+2. [ ] **The Nmax ladder** — `flat16`, `flat20`, `flat24`, `flat28` with
+       `jmax3 = 1`, one run per rung on one node; record `n`, flow wall, step count,
+       the three-way split, and peak RSS. *Gate:* the exponent relating flow cost to
+       `n`. **If it is ~3 the cost is expected O(n^3) work; if the step count
+       explodes the target is the integrator.** Stop as soon as the exponent is
+       pinned — not when the largest rung finishes.
+3. [ ] **The memory hypothesis, cheaply.** Re-run one rung with a generous matched
+       `--mem` request and compare peak RSS against wall time. If cost jumps at a
+       memory boundary, part of the "770x" is a resource-request artifact, and the
+       recorded correction above (memory is a request, not a wall) already predicts
+       that this is possible.
+4. [ ] **Only if 2-3 leave it open:** reproduce the production point — real ramp,
+       `jmax3 = 5` (12 channels, all Nmax 40 since `j <= 5`) — on one large node with
+       a matched request. This is the *confirmation*, not the discovery, and should
+       be attempted last.
+
+**Risks and honest limits.**
+
+- Rungs above Nmax ~24 may be unaffordable. The exponent may then have to come from
+  the cheap rungs and be **extrapolated**; that must be labelled, not presented as
+  measured.
+- `flat` changes the physics (high-J channels get more space than the ramp gives).
+  Fine for timing, but these are **not** production numbers and must be labelled.
+- `jmax3 = 1` samples one J bucket; cost also depends on J.
+- Scavenger pre-emption: use `--requeue`; the per-channel file cache makes restarts
+  cheap.
+
+**Deliverable:** a memo answering (a) the three-body SRG's share of a heavy channel,
+(b) whether the ODE or the diagonalisation dominates, and (c) whether the blow-up is
+n-scaling or memory contention. A fix proposal comes after that, not before.
+
+*Note:* the two-body NN redundancy (P3c, issue #7) is a separate item — but because
+both flows share one symbol, Stage 1's labelling is what keeps the two sets of
+numbers from being confused.
+
 ### P4 — GPU feasibility: gated on a hot kernel that no longer exists
 
 *Re-scoped 2026-10-03.* The premise of the bake-off was a dominant hot kernel to
