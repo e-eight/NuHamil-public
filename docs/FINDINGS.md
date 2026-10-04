@@ -1172,6 +1172,23 @@ it), so the honest prize for a row-block rewrite is **~1.5x end-to-end**, on one
 node, with a validated unit-cost model that reproduces all three measured
 configurations to within ~1 %.
 
+**Re-confirmed on the `copyfix` binary**, since every measurement above predates
+the copy-path fix in the previous section:
+
+| quantity | `ladder` | **`copyfix`** |
+| --- | --- | --- |
+| total work | 2972.3 s | **2845.9 s** |
+| max unit | 210.5 s | **202.7 s** |
+| max/mean | 2.266 | **2.279** |
+| perfect split, 31 workers | 95.9 s | **91.8 s** |
+| 32x1 wall | 215 s | **213 s** |
+| prize vs the best config (16x2 = 141 s) | 1.54x | **1.54x** |
+
+- **[measured] The prize is unchanged at 1.54x.** `max/mean` moved by 0.013, as
+  expected: the removed copies were spread across all channels rather than
+  concentrated in the heavy ones, so the distribution barely moved. The earlier
+  caveat about the histogram being one binary stale is now closed.
+
 ### Threads saturate at 2 — this is not Amdahl
 
 Phase wall for one channel, same node: **114 s (1 thread), 72 s (2), 71 s (4)**.
