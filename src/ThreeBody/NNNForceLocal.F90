@@ -1529,8 +1529,8 @@ contains
         p = p_mesh(j)
         a1 = r1*p
         a2 = r2*p
-        call spherical_bessel_ladder(L, a1, lad1)
-        call spherical_bessel_ladder(L, a2, lad2)
+        call bessel_ladder_guarded(L, a1, athr, lad1)
+        call bessel_ladder_guarded(L, a2, athr, lad2)
         do x = 0, L
           if( x > 42 .and. (a1 < 1.d-4 .or. a2 < 1.d-4) ) cycle
           v1 = lad1(x)
@@ -1631,8 +1631,8 @@ contains
         p = p_mesh(j)
         a1 = p*r1
         a2 = p*r2
-        call spherical_bessel_ladder(L, a1, lad1)
-        call spherical_bessel_ladder(L, a2, lad2)
+        call bessel_ladder_guarded(L, a1, athr, lad1)
+        call bessel_ladder_guarded(L, a2, athr, lad2)
         do x = 0, L
           v1 = lad1(x)
           if( a1 < athr(x) ) v1 = 0.d0
@@ -1650,6 +1650,7 @@ contains
     !$omp end do
     !$omp end parallel
     deallocate( athr )
+
 
     ! k = 1 and k = 2, fused.
     !
@@ -1711,6 +1712,44 @@ contains
     deallocate( pltab )
 
   end subroutine init_fkx_function
+
+
+  ! Ask GSL for the Bessel ladder only over the orders that pass the threshold.
+  !
+  ! gsl_sf_bessel_jl_array raises GSL_EUNDRFLW -- surfacing as
+  ! "gsl: gamma.c:1454: ERROR: underflow" from gsl_sf_lngamma_complex_e -- for large
+  ! l at small x (measured: l = 32..42 at x = 1e-8, l = 40,42 at 1e-6; the per-order
+  ! gsl_sf_bessel_jl fails identically).  GSL's DEFAULT error handler then calls
+  ! abort(), which is what killed the flat40 run.
+  !
+  ! The pre-ladder code never got there: spherical_bessel(l,x) computed a = athr(l)
+  ! and returned 0 BEFORE calling GSL whenever x < a, so the threshold doubled as a
+  ! guard.  Calling the ladder unconditionally bypassed it, and the callers only zero
+  ! the results afterwards, which cannot prevent the call.  This restores the guard:
+  ! orders above the largest passing one are set to 0, which is exactly what
+  ! spherical_bessel returned for them.
+  !
+  ! athr is monotonically increasing in l, so the passing set is a prefix and the
+  ! largest passing order is found by scanning down from L.  athr(0) is -1 by
+  ! construction in the callers, so l = 0 always passes.
+  subroutine bessel_ladder_guarded(L, a, athr, lad)
+    use MyLibrary, only: spherical_bessel_ladder
+    integer, intent(in) :: L
+    real(8), intent(in) :: a, athr(0:)
+    real(8), intent(out) :: lad(0:)
+    integer :: x, lmax_eff
+
+    lad(:) = 0.d0
+    lmax_eff = -1
+    do x = L, 0, -1
+      if( a >= athr(x) ) then
+        lmax_eff = x
+        exit
+      end if
+    end do
+    if( lmax_eff >= 0 ) call spherical_bessel_ladder(lmax_eff, a, lad)
+  end subroutine bessel_ladder_guarded
+
 
   function local_regulator(q, lambda, n) result(f)
     real(8), intent(in) :: q, lambda
