@@ -1346,6 +1346,70 @@ same 4x1 configuration. flat28 (n=1575) took only **178 s** wall, so flat40 is
 extrapolation or the observation is wrong, without the 8-way concurrency of the
 original run. Only then is a fix proposal worth writing.
 
+## A latent GSL abort at large `l` + small `x`, and the guard that 6b bypassed — 2026-10-03
+
+The flat40 rung **crashed** (task 3, core dumped) after 123 s:
+
+    gsl: gamma.c:1454: ERROR: underflow
+    Default GSL error handler invoked.
+
+`gamma.c:1454` is inside **`gsl_sf_lngamma_complex_e`**, and the message is printed by
+GSL's *default* error handler, which **aborts the process**.
+
+**Which call reaches it.** A standalone C probe (on a compute node) installs a
+non-aborting handler and sweeps every GSL binding our code uses over the argument
+ranges `init_zx_function` / `init_fkx_function` / `precalculations` feed them at
+Nmax up to 40 (`L = Nmax+2 = 42`):
+
+| binding | result |
+| --- | --- |
+| `gsl_sf_bessel_jl_array(l, x)` | **underflow** for `l = 32..42` at `x = 1e-8`, `l = 40,42` at `1e-6` |
+| `gsl_sf_bessel_jl(l, x)` | **the same errors at the same arguments** |
+| `gsl_sf_legendre_Pl(l, x)` | no error |
+| `gsl_sf_legendre_sphPlm(l, m, x)` | no error |
+| `gsl_sf_lngamma(x)`, `gsl_sf_laguerre_n`, `gsl_sf_gegenpoly_n` | no error |
+
+- **[measured] The GSL fragility is NOT new** — the per-order `gsl_sf_bessel_jl`
+  raises the identical error at the identical arguments. So this is not a 6b
+  regression in the sense of GSL behaviour.
+- **[measured, source] `gsl_sf_legendre_Pl_e` uses a plain upward recurrence for
+  `l < 100000`** (`legendre_poly.c`), so the Legendre path is safely ruled out despite
+  `legendre_con.c` being a caller of `lngamma_complex`.
+
+**What 6b did break: it bypassed the guard.** `spherical_bessel(l, x)` computed
+`a = athr(l)` and **returned 0 before calling GSL** whenever `x < a`. The pre-6b
+callers therefore never asked GSL about the underflowing `(l, x)` combinations —
+the threshold doubled as protection. `spherical_bessel_ladder` calls
+`gsl_sf_bessel_jl_array(L, x)` **unconditionally**, and the callers apply
+`if (a < athr(x)) v = 0` *after* it, which zeroes the values but cannot prevent the
+call. Since GSL's default handler aborts, the result is a core dump.
+
+- **[inferred] Why flat32 survived and flat40 did not:** the smallest argument
+  reached depends on the smallest `r` in the channel's coordinate list, which is not
+  a simple function of Nmax. flat16/20/24/28/32 completed; flat40 aborted. The bug is
+  therefore **latent and input-dependent**, not a clean Nmax threshold.
+- **[inferred] This is a correctness bug, not just a benchmark one**: nothing bounds
+  `x` from below in production either, so any case that reaches a small enough `r`
+  with a large enough `lmax` will abort.
+
+**Fix (not yet implemented).** Truncate the ladder at the highest order that passes
+the threshold and zero the rest — which is exactly what the pre-6b guard produced — so
+GSL is never asked for the underflowing orders:
+
+    lmax1 = 0
+    do x = L, 0, -1
+      if( a1 >= athr(x) ) then; lmax1 = x; exit; end if
+    end do
+    lad1(:) = 0.d0
+    if( lmax1 > 0 ) call spherical_bessel_ladder(lmax1, a1, lad1)
+
+Installing a non-aborting GSL error handler is worth doing as defence in depth, but
+on its own it would let GSL return garbage for orders the threshold does not cover —
+so the truncation is the real fix and the handler is the belt to its braces.
+
+**Status:** flat40 is blocked on this. flat32 completed (wall 469 s); flat36 was
+still running when this was written.
+
 ## Operational: an over-long `--time` makes a job unstartable, reported as "Priority" — 2026-10-03
 
 Three ladder jobs (flat32/36/40) sat `PENDING (Priority)` for over 40 minutes on
