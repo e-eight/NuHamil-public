@@ -108,6 +108,20 @@ module MyLibrary
       real(c_double) :: spherical_bessel_c
     end function spherical_bessel_c
 
+    ! the whole ladder j_0 .. j_lmax at one argument, in a single call.
+    ! GSL builds it with one backward (Miller) recurrence, so computing lmax+1
+    ! orders this way costs O(lmax) instead of the O(lmax^2) of calling
+    ! spherical_bessel_c separately for every order.  Used where several orders
+    ! are needed at the same argument (see NNNForceLocal's x sweeps).
+    !   int gsl_sf_bessel_jl_array(int lmax, double x, double result_array[])
+    function spherical_bessel_c_array(lmax,x,res) bind(c,name='gsl_sf_bessel_jl_array') result(status)
+      import c_int, c_double
+      integer(c_int), value, intent(in) :: lmax
+      real(c_double), value, intent(in) :: x
+      real(c_double), intent(out) :: res(*)
+      integer(c_int) :: status
+    end function spherical_bessel_c_array
+
     ! Legendre polynomial P_l(x)
     function legendre_polynomial(l,x) bind(c,name='gsl_sf_legendre_Pl')
       import c_int, c_double
@@ -1063,6 +1077,22 @@ contains
       r = (3.d0/(x*x*x) - 1.d0/x)*sin(x) - 3.d0*cos(x)/(x*x)
     end if
   end function spherical_bessel_j2
+
+  ! j_0 .. j_lmax at a SINGLE argument, in one GSL call.
+  !
+  ! GSL builds the ladder with one backward recurrence, so the cost grows as
+  ! O(lmax) rather than the O(lmax^2) of calling spherical_bessel once per order
+  ! -- which is what the x-sweeps in NNNForceLocal used to do.  Note this does
+  ! NOT apply spherical_bessel's small-x threshold; callers that need it should
+  ! zero entries against the same a(l) (see init_zx_function).
+  subroutine spherical_bessel_ladder(lmax,x,res)
+    integer, intent(in) :: lmax
+    real(8), intent(in) :: x
+    real(8), intent(out) :: res(0:lmax)
+
+    integer :: stat
+    stat = spherical_bessel_c_array(int(lmax,kind=c_int), x, res(0))
+  end subroutine spherical_bessel_ladder
 
   !
   ! isospin function pn formalism

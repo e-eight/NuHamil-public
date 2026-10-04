@@ -1473,38 +1473,65 @@ contains
     !
     ! For details, see Eq. (16) in P. Navrátil, Few-Body Syst. 41, 117 (2007).
     !
-    use MyLibrary, only: spherical_bessel, pi, hc
+    use MyLibrary, only: spherical_bessel_ladder, pi
     real(8), intent(in) :: lambda
     integer, intent(in) :: power, L
     type(Coordinates), intent(in) :: xis(:)
     integer :: i, j, x
-    real(8) :: s, r1, r2, p, a
+    real(8) :: r1, r2, p, a1, a2, v1, v2
+    real(8), allocatable :: athr(:), lad1(:), lad2(:)
 
     allocate(zx(0:L))
     do x = 0, L
       allocate(zx(x)%v(size(xis)))
       zx(x)%v(:) = 0.d0
-      a = exp(-200.d0 / dble(x) * log(10.d0) + dble(2*x+1)/dble(x) * log(dble(2*x+1)) - &
-          & dble(2*x+1)/dble(x) - log(dble(x)) + 1 - log(2.d0) )
-      !$omp parallel
-      !$omp do private(i, r1, r2, s, j, p)
-      do i = 1, size(xis)
-        r1 = xis(i)%x1 / sqrt(2.d0)
-        r2 = xis(i)%x2 * sqrt(1.5d0)
-
-        s = 0.d0
-        do j = 1, NMesh_p
-          p = p_mesh(j)
-          if( x > 42 .and. (r1*p < 1.d-4 .or. r2*p < 1.d-4) ) cycle
-          s = s + pm_w2(j) * spherical_bessel(x, r1*p) * spherical_bessel(x, r2*p) * &
-              & pm_lr(j)
-        end do
-        zx(x)%v(i) = s / (2.d0 * pi**2)
-      end do
-      !$omp end do
-      !$omp end parallel
-
     end do
+
+    ! spherical_bessel's small-x threshold per order, built once.  athr(0) must
+    ! never trigger: for l = 0 the original expression divides by zero, so the
+    ! wrapper compared against a NaN and never returned 0.
+    allocate( athr(0:L) )
+    athr(0) = -1.d0
+    do x = 1, L
+      athr(x) = exp(-200.d0 / dble(x) * log(10.d0) + dble(2*x+1)/dble(x) * log(dble(2*x+1)) - &
+          & dble(2*x+1)/dble(x) - log(dble(x)) + 1 - log(2.d0) )
+    end do
+
+    ! The order loop used to be OUTERMOST, so for every (i,j) the same argument
+    ! was handed to spherical_bessel L+1 times -- each call running its own
+    ! backward recurrence, i.e. O(L^2) per argument.  With i outermost the whole
+    ! ladder j_0..j_L is built once per argument, in a single GSL call.
+    !$omp parallel
+    !$omp do private(i, j, p, r1, r2, a1, a2, x, v1, v2, lad1, lad2)
+    do i = 1, size(xis)
+      allocate( lad1(0:L), lad2(0:L) )
+      r1 = xis(i)%x1 / sqrt(2.d0)
+      r2 = xis(i)%x2 * sqrt(1.5d0)
+
+      do j = 1, NMesh_p
+        p = p_mesh(j)
+        a1 = r1*p
+        a2 = r2*p
+        call spherical_bessel_ladder(L, a1, lad1)
+        call spherical_bessel_ladder(L, a2, lad2)
+        do x = 0, L
+          if( x > 42 .and. (a1 < 1.d-4 .or. a2 < 1.d-4) ) cycle
+          v1 = lad1(x)
+          if( a1 < athr(x) ) v1 = 0.d0
+          v2 = lad2(x)
+          if( a2 < athr(x) ) v2 = 0.d0
+          zx(x)%v(i) = zx(x)%v(i) + pm_w2(j) * v1 * v2 * pm_lr(j)
+        end do
+      end do
+
+      do x = 0, L
+        zx(x)%v(i) = zx(x)%v(i) / (2.d0 * pi**2)
+      end do
+      deallocate( lad1, lad2 )
+    end do
+    !$omp end do
+    !$omp end parallel
+    deallocate( athr )
   end subroutine init_zx_function
 
   subroutine init_fk_function(lambda,power)
@@ -1549,13 +1576,13 @@ contains
     !
     ! For details, see Eqs. (34), (36), and (44) in P. Navrátil, Few-Body Syst. 41, 117 (2007).
     !
-    use MyLibrary, only: spherical_bessel, pi, hc, m_pi, legendre_polynomial
+    use MyLibrary, only: spherical_bessel_ladder, pi, legendre_polynomial
     real(8), intent(in) :: lambda
     integer, intent(in) :: power, L
     type(Coordinates), intent(in) :: xis(:)
     integer :: i, j, x
-    real(8) :: s, r1, r2, r, p, costh, wcosth, rr, tworr
-    real(8), allocatable :: pl(:)
+    real(8) :: s, r1, r2, r, p, costh, wcosth, rr, tworr, a1, a2, v1, v2
+    real(8), allocatable :: pl(:), athr(:), lad1(:), lad2(:)
 
     allocate(fkx(0:2,0:L))
     allocate( pl(NMesh_cos) )
@@ -1564,24 +1591,48 @@ contains
     do x = 0, L
       allocate(fkx(0,x)%v( size(xis) ) )
       fkx(0,x)%v(:) = 0.d0
-
-      !$omp parallel
-      !$omp do private(i, r1, r2, s, j, p)
-      do i = 1, size(xis)
-        r1 = xis(i)%x1 / sqrt(2.d0)
-        r2 = xis(i)%x2 * sqrt(1.5d0)
-
-        s = 0.d0
-        do j = 1, NMesh_p
-          p = p_mesh(j)
-          s = s + pm_w4(j) * spherical_bessel(x, p*r1) * &
-              & spherical_bessel(x, p*r2) * pm_lr(j) / pm_den(j)
-        end do
-        fkx(0,x)%v(i) = s / (2.d0 * pi**2)
-      end do
-      !$omp end do
-      !$omp end parallel
     end do
+
+    ! as in init_zx_function: the order loop is no longer outermost, so the
+    ! ladder j_0..j_L is built once per argument instead of L+1 separate GSL
+    ! calls at the same argument.
+    allocate( athr(0:L) )
+    athr(0) = -1.d0
+    do x = 1, L
+      athr(x) = exp(-200.d0 / dble(x) * log(10.d0) + dble(2*x+1)/dble(x) * log(dble(2*x+1)) - &
+          & dble(2*x+1)/dble(x) - log(dble(x)) + 1 - log(2.d0) )
+    end do
+
+    !$omp parallel
+    !$omp do private(i, j, p, r1, r2, a1, a2, x, v1, v2, lad1, lad2)
+    do i = 1, size(xis)
+      allocate( lad1(0:L), lad2(0:L) )
+      r1 = xis(i)%x1 / sqrt(2.d0)
+      r2 = xis(i)%x2 * sqrt(1.5d0)
+
+      do j = 1, NMesh_p
+        p = p_mesh(j)
+        a1 = p*r1
+        a2 = p*r2
+        call spherical_bessel_ladder(L, a1, lad1)
+        call spherical_bessel_ladder(L, a2, lad2)
+        do x = 0, L
+          v1 = lad1(x)
+          if( a1 < athr(x) ) v1 = 0.d0
+          v2 = lad2(x)
+          if( a2 < athr(x) ) v2 = 0.d0
+          fkx(0,x)%v(i) = fkx(0,x)%v(i) + pm_w4(j) * v1 * v2 * pm_lr(j) / pm_den(j)
+        end do
+      end do
+
+      do x = 0, L
+        fkx(0,x)%v(i) = fkx(0,x)%v(i) / (2.d0 * pi**2)
+      end do
+      deallocate( lad1, lad2 )
+    end do
+    !$omp end do
+    !$omp end parallel
+    deallocate( athr )
 
     ! k = 1
     do x = 0, L
