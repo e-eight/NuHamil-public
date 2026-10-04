@@ -54,7 +54,12 @@ fi
 module load gcc/13.3.0
 module load gsl/2.8
 
-DEST="$SCRATCH_ROOT/runs/prof-$(basename "$SRC")"
+# Every run gets its own directory.  Deriving it from the source name alone meant
+# successive profiles of the same source silently overwrote each other -- which
+# actually happened: a 4-thread flat profile was replaced by the 1-thread one, and
+# the stale numbers were nearly read as current.  Override with NH_PROFILE_TAG.
+PROF_TAG="${NH_PROFILE_TAG:-$(date +%Y%m%dT%H%M%S)}"
+DEST="$SCRATCH_ROOT/runs/prof-$(basename "$SRC")-$PROF_TAG"
 BIN="$SCRATCH_ROOT/build/$TAG/NuHamil_serial.exe"
 if [ ! -x "$BIN" ]; then
     echo "ERROR: no serial binary at $BIN" >&2

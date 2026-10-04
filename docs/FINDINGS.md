@@ -838,6 +838,79 @@ verification for this code is the tolerance-based `bench/accept.py` plus the deu
 anchor, which is exactly why the project retired `.me3j` hashing. This finding
 independently confirms that decision was correct.
 
+## Inventory: redundant loop work and replaceable math — 2026-10-03
+
+Taken before starting the row-block refactor, because the hoist was the best ROI so
+far (1.34x for free) and this class of change is cheaper and safer than reshaping the
+farm. Shares below are from the **1-thread** profile (159 s), which is the cleanest
+view of *where the work is* — with no barrier time competing for cycles:
+
+| group | share of work |
+| --- | --- |
+| GSL Bessel (`j2_e` 5.79, `j1_e` 5.39, `J_CF1` 5.85, `jl` 2.63, `jl_e` 1.29, `IJ_taylor_e` 0.30) | **21.3 %** |
+| libm internals (`0x754c1` 10.45, `0x754c6` 5.13, others, `exp` 0.76) | 17.1 % |
+| MKL (`dgemm_kernel` 14.14, `dgemm_pst` 3.67, `xdcopy` 2.33, pack/copy 0.86) | 21.5 % |
+| our own physics | ~26 % |
+| `__powidf2` | 2.43 % |
+
+### Redundancy: calls invariant over a loop index
+
+1. **`legendre_polynomial` is invariant over `i`** in `init_fkx_function`
+   (`NNNForceLocal.F90:1600,1624`). It sits inside `do i` but takes `(x, costh)`,
+   which depend only on the outer `x` and the inner `j` — so GSL's `Pl` is recomputed
+   `size(xis)` times for each distinct `(x,j)`. Hoist to a `pl(j)` table per `x`.
+   *(0.50 % self, plus call overhead.)*
+2. **`r1**2 + r2**2` and `2*r1*r2` are invariant over `j`** in the same two loops
+   (`:1602,1626`): they depend only on `i`. Hoisting them out of the inner loop also
+   removes **two `__powidf2` calls per inner iteration**. *(Feeds the 2.43 %.)*
+3. **`spherical_bessel`'s threshold** (`MyLibrary.F90:1019`) recomputes
+   `exp(-200/l*log(10) + ...)` on every call although it depends only on `l`, and the
+   function is called millions of times. Precompute per `l`. *(0.83 % self.)*
+4. **`ho_radial_wf_norm`** (`MyLibrary.F90:750`) recomputes two `ln_gamma` calls and
+   `sqrt(2*nu)` per point although they depend only on `(n,l)`; it is called
+   `NMesh * (Nmax/2) * Nmax` ~ 10^5 times per channel from `store_radial_wf`.
+   *(~0.6 %.)*
+5. **`non_local_regulator_ho_mat`** (6.96 % self) still loads four `Radial` values per
+   `(i,k)` iteration, two of which depend only on `i` and can be hoisted out of the `k`
+   loop. This is the innermost loop of 250 000 iterations per matrix element, so it is
+   about memory traffic rather than arithmetic.
+
+### Replaceable math
+
+6. **GSL Bessel is the single biggest target, and it is replaceable two ways.**
+   - **[l = 1 and l = 2 have exact closed forms]** in sin/cos:
+     `j1(x) = sin x/x^2 - cos x/x`,
+     `j2(x) = (3/x^3 - 1/x) sin x - 3 cos x/x^2`.
+     The profile's `j1_e` + `j2_e` = **11.2 %** comes precisely from these two orders
+     (GSL's `jl_e` dispatches to them). Replacing them is a few flops instead of an
+     error-checked recurrence. **Caveat:** catastrophic cancellation as `x -> 0`, so a
+     small-`x` cutoff or series is required; the existing threshold already returns 0
+     below a small `x`.
+   - **[the order sweep repeats work]** `init_zx_function` and `init_fkx_function` k=0
+     call `spherical_bessel(x, arg)` for `x = 0..L` at the *same* `arg` (`r1*p` or
+     `p*r1`), and each call runs its own backward recurrence — `O(L^2)` per argument
+     where one Miller ladder is `O(L)`. That is `J_CF1` + `jl` + `jl_e` = **9.8 %**.
+     Fixing it means making `x` the innermost loop and building the ladder once.
+7. **`__powidf2` (2.43 %)** is largely items 2 and 4; the rest is `x**2`-style
+   integer powers.
+8. **MKL spends 6.9 % outside the kernel** (`dgemm_pst` 3.67 + `xdcopy` 2.33 +
+   `copybn`/`copyan` 0.86). Packing and copying at that scale suggests temporaries
+   around the products, e.g. `work = cfp%T() * work * cfp`. Worth reading `DMat`'s
+   operator implementations, but it needs care and is speculative.
+
+**Recommended order:** item 6a (≈11 % of work, small and local), then 6b (≈10 %,
+contained but needs a loop-nest change), then items 1-4 as a batch (≈2 %), and only
+then the row-block farm refactor. All are verifiable with `accept.py` + the deuteron.
+
+## Process bug found and fixed: profiles were overwriting each other
+
+`bench/reprofile.sbatch` derived its output directory from the source run's name, so
+repeated profiles of the same source silently replaced each other. That is why a
+stale 4-thread table (libgomp 38.9 %) and the current 1-thread table (libgsl 24.1 %)
+were both in play in this session, and the numbers were nearly read as current. The
+directory now carries a timestamp (`NH_PROFILE_TAG` to override). **Any profile number
+must be quoted with the run it came from.**
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
