@@ -1284,6 +1284,27 @@ had been proposing for several turns rested on a wrong mental model.
 
 `#PROF_PHASE` is left in place alongside `#PROF_UNIT`.
 
+### Row-split stage 1 (guard `v`): kept as a prerequisite, but zero timing gain
+
+`set_nnn_int_chEFT_n2lo_isospin_local` allocated `v(N(N+1)/2)` and stored every
+matrix element into it, in all five LEC passes — but `v` is only ever read back by
+five `write(50) v` dumps that run only when `save_3nf_before_lec` is set, which is
+`.false.` by default and unset in our inputs. Allocation and store are now guarded;
+a zero-size actual keeps the assumed-shape dummy legal.
+
+- **[measured] No timing benefit.** Same-node A/B on ccc0499, 16x2, cold:
+  **139 s before, 139 s after.** Numerically exact: deuteron unchanged,
+  `accept.py` PASS, output identical in all 456 320 values.
+- **[inferred] Why it is nil:** the store volume is `5 x N(N+1)/2` doubles per
+  channel, which is small next to the rest of a channel even before the
+  accumulation into `this`. Below the ~1.6 % noise floor for this case.
+  The plan had listed a "candidate small win" here; that part did not materialise.
+- **Kept anyway, on a design reason rather than a performance one**: it removes the
+  `v` array from the row-split design entirely, so stage-2 block units need no
+  scratch array or store at all. This is the case where "no measured benefit" does
+  *not* mean revert — unlike `-march` and the `chEFT_n2lo` copy rewrite, which added
+  a constraint or churn in exchange for nothing.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing

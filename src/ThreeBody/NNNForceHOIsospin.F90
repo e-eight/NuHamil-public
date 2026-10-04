@@ -724,8 +724,18 @@ contains
     fn = get_file_name_ho_partial_wave_n2lo_isospin(jac, jac%GetNmax(), &
         & s%str("Local"), RegulatorPower, lam_local, 0.d0, path_to_dir)
 
-    n = int(jac%GetNumberNAStates(),kind(n)) * int(jac%GetNumberNAStates()+1,kind(n)) / int(2,kind(n))
-    allocate(v(n))
+    ! v is scratch: it is written for every matrix element below, but only ever
+    ! read back by the five `write(50) v` dumps, which happen only when
+    ! save_3nf_before_lec is set.  That flag defaults to .false. and is unset in
+    ! our inputs, so allocate it only for the save path -- a zero-size actual keeps
+    ! the assumed-shape dummy in set_inside legal -- and skip the per-element store.
+    ! This also removes an N(N+1)/2 array from the planned row-split design.
+    if( save_3nf_before_lec ) then
+      n = int(jac%GetNumberNAStates(),kind(n)) * int(jac%GetNumberNAStates()+1,kind(n)) / int(2,kind(n))
+      allocate(v(n))
+    else
+      allocate(v(0))
+    end if
     call this%zeros(jac%GetNumberNAStates(), jac%GetNumberNAStates())
 
     call nnn_force%init(jac%GetJ(), jac%GetParity(), jac%GetT(), jac%GetNmax(), &
@@ -781,11 +791,13 @@ contains
         bra => jac%GetNAS(ibra)
         do iket = 1, ibra
           ket => jac%GetNAS(iket)
-          nelm = int(ibra,kind(nelm)) * int(ibra-1,kind(nelm)) / int(2,kind(nelm)) + &
-              & int(iket,kind(nelm))
           v3 = tmp%get(bra%GetN12(),bra%GetL12(),bra%GetS12(),bra%GetJ12(),bra%GetT12(),bra%GetN3(),bra%GetL3(),bra%GetJ3(),&
               &        ket%GetN12(),ket%GetL12(),ket%GetS12(),ket%GetJ12(),ket%GetT12(),ket%GetN3(),ket%GetL3(),ket%GetJ3())
-          vtmp(nelm) = v3
+          if( save_3nf_before_lec ) then
+            nelm = int(ibra,kind(nelm)) * int(ibra-1,kind(nelm)) / int(2,kind(nelm)) + &
+                & int(iket,kind(nelm))
+            vtmp(nelm) = v3
+          end if
           that%m(ibra,iket) = this%m(ibra,iket) + 3.d0 * v3 * lec
           that%m(iket,ibra) = this%m(ibra,iket)
         end do

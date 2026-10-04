@@ -246,7 +246,11 @@ on its own, measurable in isolation before any MPI work.
 
 **Staged implementation, with a verification gate at each stage.**
 
-1. Guard `v`. *Gate:* deuteron + `accept.py` + output unchanged; measure alone.
+1. [x] Guard `v`. *Gate:* deuteron + `accept.py` + output unchanged; measure alone.
+       **Done — gate passed, timing benefit nil.** 16x2 on ccc0499: 139 s before,
+       139 s after; output identical in all 456 320 values. Kept as a prerequisite
+       for stage 2 (it removes the scratch array from the block units entirely), not
+       as a performance win. See `FINDINGS.md`, "Row-split stage 1".
 2. Add optional row-range arguments to `set_nnn_int_chEFT_n2lo_isospin_local` /
    `set_inside`, defaulting to the full range. **No MPI yet.** *Gate:* the
    whole-channel path reproduces the current output **exactly**. This proves row
