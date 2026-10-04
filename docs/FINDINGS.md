@@ -1282,6 +1282,61 @@ had been proposing for several turns rested on a wrong mental model.
   (`cfp = jac%GetCFPMat()` then `this%DMat = cfp%T() * work * cfp`) — though that
   was later measured as worthless too (see "Second attempt").
 
+## Ladder complete: the SRG flow is 8 % of a `ramplarge` channel — the answer is NO — 2026-10-03
+
+The ladder now reaches the top of the real ramp (the guard fix unblocked flat40).
+
+| rung | 3body `n_max` | 3body flow sum | `construct` sum | NN-2body sum | NN/3body | **SRG share** |
+| --- | --- | --- | --- | --- | --- | --- |
+| flat16 | 351 | 1.18 s | 37.75 s | 4.432 s | 3.743 | 3.1 % |
+| flat20 | 632 | 8.15 s | 64.00 s | 4.447 s | 0.546 | 11.5 % |
+| flat24 | 1033 | 31.98 s | 113.51 s | 4.444 s | 0.139 | 22.2 % |
+| flat28 | 1575 | 144.11 s | 205.21 s | 4.443 s | 0.031 | 41.3 % |
+| flat32 | 2280 | 474.93 s | 369.57 s | 4.456 s | 0.009 | 56.2 % |
+| flat36 | 3169 | 1176.27 s | 683.39 s | 4.524 s | 0.004 | 63.0 % |
+| **flat40** | **4263** | **3355.50 s** | **1161.00 s** | 5.573 s | 0.002 | **73.8 %** |
+
+- **[measured] Final exponent `p = 3.11`** over n = 351 -> 4263 (successive 3.16, 2.86,
+  3.36, 3.39, 2.51, 3.43). The three-body flow is O(n^3) throughout, with DVODE steps
+  rising only gently (76 -> 103). `construct` scales as n^1.8 in the upper range.
+- **[measured] The extrapolation validated to 0.7 %.** From flat36 the law predicted
+  **1625 s** for a heavy flat40 flow (n=4263). Measured: **1612.9 s** (ode 1573.4,
+  diag 37.1, u 2.4; steps 103, nfe 169). The n^3.11 law is trustworthy over this range.
+- **[measured] flat40 completed clean** — wall **2505 s**, exit 0, **zero GSL errors**,
+  so the ladder-guard fix holds at the top of the ramp.
+
+**The answer to P3b-i's question: NO, the three-body SRG flow is not the `ramplarge`
+bottleneck.** The heaviest flat40 flow is 1612.9 s = **26.9 min**, against the observed
+`ramplarge` `j1p+t1` channel wall of **5.37 h** — so the SRG is **8.3 %** of it.
+
+That settles P3b-i stage 1-2 as a well-supported negative result. It also **refutes the
+prediction I made** when the SRG was believed dominant ("a 300-430x n^3 term inside an
+8.4 % share would make the SRG dominant on ramplarge"). The SRG *is* dominant as a
+share of a channel's own compute — 73.8 % by flat40 — but a channel's compute is not
+where the 5.37 h went.
+
+### The ~7.7x that remains, and the experiment that would settle it
+
+The comparison is now like-for-like in `n` and free of extrapolation:
+
+| | heaviest channel, n=4263 | configuration |
+| --- | --- | --- |
+| ladder flat40 | ~2505 s wall for 4 channels (**~42 min**) | **4 ranks x 1 thread** |
+| original `ramplarge` | **5.37 h = 322 min** | **8 ranks x 4 threads** |
+
+**~7.7x.** The obvious difference is concurrency: the ladder ran 4 single-threaded
+flows, while the original ran **8 heavy flows x 4 threads = 32 threads on one node**,
+all executing large O(n^3) dgemm. Memory-bandwidth contention is the leading
+hypothesis and it fits the shape of everything measured so far.
+
+- [ ] **Decisive experiment: run flat40 at 8 ranks x 4 threads** — the same shape as
+  the original — and compare the per-flow time against the 4x1 number just measured.
+  If the flow inflates several-fold, the bottleneck is thread/bandwidth contention,
+  not the algorithm, and the fix is a configuration choice rather than code.
+
+This is the measurement to do before any fix proposal, and unlike the earlier attempts
+it needs no extrapolation and no unaffordable run.
+
 ## `#PROF_FLOW`: a flow is the ODE, and the three-body flow is n^3.1 — 2026-10-03
 
 `#PROF_FLOW` (stage 1 of P3b-i) reports per flow: `tag` (two- vs three-body), `n`,
