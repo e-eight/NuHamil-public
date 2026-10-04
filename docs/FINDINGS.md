@@ -1037,13 +1037,52 @@ submodule.
   fix: each column is already contiguous, so the copy volume is the cost, not the
   call count.
 
-### Caveat / next measurement
+### Attribution (measured): it is ours, and 75 % of it is one routine
 
-`mkl_def` also exports `mkl_blas_def_dgemm_dcopy_notrans/_trans`, so part of the
-`xdcopy` time could come from **dgemm's own internal copying** rather than from
-`MatrixCopyD`. The flat profile cannot separate them (`MatrixCopyD` is small
-enough to be inlined). One call-graph profile of `mkl_blas_def_xdcopy`'s callers
-would settle the attribution before any code is changed.
+Followed up with a call-graph profile at 1 thread (`NH_CALLGRAPH=1`, so MKL is
+single-threaded and the callers are unambiguous), then walked each `xdcopy`
+sample up its stack.
+
+Every one of the 779 `xdcopy` samples reached it through MKL's **public**
+`mkl_blas__dcopy` -> `mkl_blas_dcopy`, i.e. from an explicit `call dcopy`, **not**
+from dgemm's internal `dgemm_dcopy_*` paths. So the earlier caveat is resolved:
+this is not MKL doing something to us.
+
+| direct caller of `dcopy` | samples | share |
+| --- | --- | --- |
+| `__matrixdouble_MOD_matrixcopyd` (DMat defined assignment) | 587 | 75.4 % |
+| `__vectordouble_MOD_vectorcopyd` | 72 | 9.2 % |
+| `__vectordouble_MOD_vectorscalerd` | 61 | 7.8 % |
+| `__vectordouble_MOD_vectorsumd` | 58 | 7.4 % |
+| `__matrixdouble_MOD_matrixsumd` | 1 | 0.1 % |
+
+- **[measured] 100 % of it is the `LinAlgf90` copy-based algebra** (`DMat` and
+  `DVec` defined assignments), matching the source reading above. None is dgemm
+  internals.
+- **[measured] And 582 of the 587 `MatrixCopyD` samples -- 75 % of all copy time --
+  come from a single routine**: `__nnnforcelocal_MOD_transform_xis_to_ho`
+  (plus 2 from `set_two_pion_exchange_c3` and one each from three others).
+
+That routine (`NNNForceLocal.F90:1034`) is exactly the predicted shape — four
+`DMat` assignments, each a full copy:
+
+```fortran
+ovlp_bra = get_overlap_xis_ho(nxis, xis, chbra)   ! copy of a returned DMat
+ovlp_ket = get_overlap_xis_ho(nxis, xis, chket)   ! copy of a returned DMat
+m = ovlp_bra%t()                                  ! Trans copy + assignment copy
+... m%m(:,i) = m%m(:,i) * c ...                   ! in-place scale (fine)
+mat = m * ovlp_ket                                ! ProductD alloc+dgemm + assignment copy
+```
+
+- **Fix**: rewrite those expressions with explicit `dgemm` into preallocated
+  buffers, as `ThreeBodyJacOpsChanIso.F90:1051` already does. Local to our source,
+  no submodule edit.
+- **Size**: `xdcopy` is 3.7 s of 114 s (1 thread) / 2.9 s of 71 s (4 threads), so
+  ~75 % of that is ~3 % of wall directly, plus the `Trans` copy
+  (`__matrixdouble_MOD_trans`, 1.2 s / 0.6 s) and the bandwidth relief.
+- **[inferred] Modest but structural**: at ~3-4 % it is smaller than the Bessel
+  work, but it is the clearest remaining piece of *waste* — pure memory traffic
+  doing no arithmetic, in a routine we can name.
 
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
