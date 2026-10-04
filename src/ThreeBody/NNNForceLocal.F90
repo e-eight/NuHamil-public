@@ -315,7 +315,7 @@ contains
       call vi%fin()
       return
     end if
-    this%MatCh(ch_bra, ch_ket)%DMat = transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr)
+    call transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr,this%MatCh(ch_bra, ch_ket)%DMat)
     this%MatCh(ch_ket, ch_bra)%DMat = this%MatCh(ch_bra, ch_ket)%DMat%T()
     this%MatCh(ch_bra, ch_ket)%zero = .false.
     this%MatCh(ch_ket, ch_bra)%zero = .false.
@@ -454,7 +454,7 @@ contains
       call vi%fin()
       return
     end if
-    this%MatCh(ch_bra, ch_ket)%DMat = transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr)
+    call transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr,this%MatCh(ch_bra, ch_ket)%DMat)
     this%MatCh(ch_ket, ch_bra)%DMat = this%MatCh(ch_bra, ch_ket)%DMat%T()
     this%MatCh(ch_bra, ch_ket)%zero = .false.
     this%MatCh(ch_ket, ch_bra)%zero = .false.
@@ -605,7 +605,7 @@ contains
       call vi%fin()
       return
     end if
-    this%MatCh(ch_bra, ch_ket)%DMat = transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr)
+    call transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr,this%MatCh(ch_bra, ch_ket)%DMat)
     this%MatCh(ch_ket, ch_bra)%DMat = this%MatCh(ch_bra, ch_ket)%DMat%T()
     this%MatCh(ch_bra, ch_ket)%zero = .false.
     this%MatCh(ch_ket, ch_bra)%zero = .false.
@@ -719,7 +719,7 @@ contains
       call vi%fin()
       return
     end if
-    this%MatCh(ch_bra, ch_ket)%DMat = transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr)
+    call transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr,this%MatCh(ch_bra, ch_ket)%DMat)
     this%MatCh(ch_ket, ch_bra)%DMat = this%MatCh(ch_bra, ch_ket)%DMat%T()
     this%MatCh(ch_bra, ch_ket)%zero = .false.
     this%MatCh(ch_ket, ch_bra)%zero = .false.
@@ -816,7 +816,7 @@ contains
       call vr%fin()
       return
     end if
-    this%MatCh(ch_bra, ch_ket)%DMat = transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr)
+    call transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr,this%MatCh(ch_bra, ch_ket)%DMat)
     this%MatCh(ch_ket, ch_bra)%DMat = this%MatCh(ch_bra, ch_ket)%DMat%T()
     this%MatCh(ch_bra, ch_ket)%zero = .false.
     this%MatCh(ch_ket, ch_bra)%zero = .false.
@@ -902,7 +902,7 @@ contains
       call vr%fin()
       return
     end if
-    this%MatCh(ch_bra, ch_ket)%DMat = transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr)
+    call transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr,this%MatCh(ch_bra, ch_ket)%DMat)
     this%MatCh(ch_ket, ch_bra)%DMat = this%MatCh(ch_bra, ch_ket)%DMat%T()
     this%MatCh(ch_bra, ch_ket)%zero = .false.
     this%MatCh(ch_ket, ch_bra)%zero = .false.
@@ -987,7 +987,7 @@ contains
       call vr%fin()
       return
     end if
-    this%MatCh(ch_bra, ch_ket)%DMat = transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr)
+    call transform_xis_to_ho(ms%Nxis,ms%xis,chbra,chket,vr,this%MatCh(ch_bra, ch_ket)%DMat)
     this%MatCh(ch_ket, ch_bra)%DMat = this%MatCh(ch_bra, ch_ket)%DMat%T()
     this%MatCh(ch_bra, ch_ket)%zero = .false.
     this%MatCh(ch_ket, ch_bra)%zero = .false.
@@ -1031,18 +1031,34 @@ contains
     end do
   end function transform_xis_to_ho_element
 
-  function transform_xis_to_ho(nxis,xis,chbra,chket,v) result(mat)
+  ! Writes into a caller-supplied matrix rather than returning one.
+  !
+  ! DMat's arithmetic is function-style -- operator(*) calls MatrixProductD, which
+  ! allocates a NEW DMat -- and its assignment(=) is a defined assignment that
+  ! copies with a column-by-column dcopy.  So the natural-looking
+  ! `mat = ovlp_bra%t() * ovlp_ket` cost five full matrix copies per call, plus a
+  ! sixth at every call site assigning the result into this%MatCh().  A
+  ! call-graph profile attributed 75 % of ALL dcopy traffic in this phase to this
+  ! routine.  See docs/FINDINGS.md, "The MKL copy path is DMat's algebra".
+  subroutine transform_xis_to_ho(nxis,xis,chbra,chket,v,mat)
     integer, intent(in) :: nxis
     type(Coordinates), intent(in) :: xis(:)
     type(PWChan), intent(in) :: chbra, chket
     type(DVec), intent(in) :: v
-    type(DMat) :: mat, m, ovlp_bra, ovlp_ket
+    type(DMat), intent(out) :: mat
+    type(DMat) :: m, ovlp_bra, ovlp_ket
     real(8) :: c
-    integer :: i, i1, i2
+    integer :: i, i1, i2, nbra, nket
 
-    ovlp_bra = get_overlap_xis_ho(nxis, xis, chbra)
-    ovlp_ket = get_overlap_xis_ho(nxis, xis, chket)
-    m = ovlp_bra%t()
+    call get_overlap_xis_ho(nxis, xis, chbra, ovlp_bra)
+    call get_overlap_xis_ho(nxis, xis, chket, ovlp_ket)
+    nbra = ovlp_bra%n_col
+    nket = ovlp_ket%n_col
+
+    ! m = ovlp_bra^T, transposed straight into m: no temporary result and no
+    ! defined-assignment copy.
+    call m%ini(nbra, nxis)
+    m%m = transpose(ovlp_bra%m)
     !$omp parallel
     !$omp do private(i, i1, i2, c)
     do i = 1, v%n_size
@@ -1053,39 +1069,23 @@ contains
     end do
     !$omp end do
     !$omp end parallel
-    mat = m * ovlp_ket
+
+    ! product straight into the caller's matrix: no temporary, no copy
+    call mat%ini(nbra, nket)
+    call dgemm('n','n', nbra, nket, nxis, 1.d0, m%m, nbra, ovlp_ket%m, nxis, 0.d0, mat%m, nbra)
+
     call ovlp_bra%fin()
     call ovlp_ket%fin()
     call m%fin()
-  end function transform_xis_to_ho
+  end subroutine transform_xis_to_ho
 
-  function transform_xis_to_ho_old(nxis,xis,chbra,chket,v) result(mat)
-    integer, intent(in) :: nxis
-    type(Coordinates), intent(in) :: xis(:)
-    type(PWChan), intent(in) :: chbra, chket
-    type(DVec), intent(in) :: v
-    type(DMat) :: mat, mat_r, ovlp_bra, ovlp_ket
-    integer :: i, i1, i2
-
-    ovlp_bra = get_overlap_xis_ho(nxis, xis, chbra)
-    ovlp_ket = get_overlap_xis_ho(nxis, xis, chket)
-    call mat_r%zeros(v%n_size, v%n_size)
-    do i = 1, v%n_size
-      i1 = xis(i)%i1
-      i2 = xis(i)%i2
-      mat_r%m(i,i) = v%v(i) * rw_mesh(i1) * rw_mesh(i2)
-    end do
-    mat = ovlp_bra%t() * mat_r * ovlp_ket
-    call ovlp_bra%fin()
-    call ovlp_ket%fin()
-    call mat_r%fin()
-  end function transform_xis_to_ho_old
-
-  function get_overlap_xis_ho(nxis,xis,ch) result(mat)
+  ! Fills a caller-supplied matrix instead of returning one, so the callers do
+  ! not pay a defined-assignment copy of the whole overlap each time.
+  subroutine get_overlap_xis_ho(nxis,xis,ch,mat)
     integer, intent(in) :: nxis
     type(Coordinates), intent(in) :: xis(:)
     type(PWChan), intent(in) :: ch
-    type(DMat) :: mat, eye
+    type(DMat), intent(out) :: mat
     integer :: iHO, n12, n3, i, i1, i2
 
     call mat%ini(nxis, ch%Nho)
@@ -1103,33 +1103,7 @@ contains
     end do
     !$omp end do
     !$omp end parallel
-
-    return
-    ! norm check
-    call mat%ini(nxis, ch%Nho)
-    call eye%zeros(nxis, nxis)
-    !$omp parallel
-    !$omp do private(iHO, n12, n3, i, i1, i2)
-    do iHO = 1, ch%Nho
-      n12 = ch%n12(iHO)
-      n3  = ch%n3( iHO)
-
-      do i = 1, nxis
-        i1 = xis(i)%i1
-        i2 = xis(i)%i2
-        mat%m(i,iHO) = radial_ho_wf(i1,n12,ch%l12) * radial_ho_wf(i2,n3,ch%l3)
-      end do
-    end do
-    !$omp end do
-    !$omp end parallel
-    do i = 1, nxis
-      i1 = xis(i)%i1
-      i2 = xis(i)%i2
-      eye%m(i,i) = rw_mesh(i1) * rw_mesh(i2)
-    end do
-    eye = mat%t() * eye * mat
-    call eye%prt("eye")
-  end function get_overlap_xis_ho
+  end subroutine get_overlap_xis_ho
 
   function tau1_dot_tau2(t) result(r)
     use MyLibrary, only: sjs

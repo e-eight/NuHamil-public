@@ -1084,6 +1084,40 @@ mat = m * ovlp_ket                                ! ProductD alloc+dgemm + assig
   work, but it is the clearest remaining piece of *waste* — pure memory traffic
   doing no arithmetic, in a routine we can name.
 
+### Fixed, and the mechanism confirmed — 2026-10-03
+
+`transform_xis_to_ho` and `get_overlap_xis_ho` now take caller-supplied matrices
+and write into them, the transpose is taken straight into `m%m`, and the product
+goes through an explicit `dgemm` into the caller's matrix. That removes the four
+copies inside the routine plus the fifth at each of the 7 call sites. The dead
+`transform_xis_to_ho_old` (unreferenced, and it would not have compiled against
+the new `get_overlap_xis_ho`) was deleted along with an unreachable "norm check"
+block after a `return`.
+
+| 16x2, ccc0497, ramp small | wall |
+| --- | --- |
+| `ladder` | 148 s |
+| **`copyfix`** | **141 s** (1.05x) |
+
+- **[measured] Numerics clean**: deuteron -2.22434846 unchanged, `accept.py` PASS
+  with the same 4.01e-06 worst element, and the output identical to the `ladder`
+  run in all 456 320 values.
+- **[measured] The copies really are gone** — 1-thread profile, before -> after:
+
+  | symbol | `ladder` | `copyfix` |
+  | --- | --- | --- |
+  | `mkl_blas_def_xdcopy` | 3.21 % | **0.96 %** |
+  | `__matrixdouble_MOD_matrixcopyd` | 0.25 % | **0.00 %** |
+  | `__matrixdouble_MOD_trans` | 1.01 % | **0.01 %** |
+
+  The residue is the `DVec` copy/scale/sum family — the other 25 % of the
+  attribution, untouched.
+- **[inferred] The 16x2 gain (4.7 %) exceeds the single-thread gain (2.7 %,
+  113 -> 110 s under perf)**, which is what a bandwidth-bound cost should do: the
+  copies hurt more when 16 ranks are contending for bandwidth than when one
+  thread is running alone. That is a second, independent hint that the
+  bandwidth reading is the right one.
+
 ## Re-measurement with the current binary: the refactor's prize is 1.54x, and threads saturate at 2 — 2026-10-03
 
 All three refactor-relevant measurements were taken on the `hoist` binary and had
