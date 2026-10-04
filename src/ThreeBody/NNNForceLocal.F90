@@ -1598,11 +1598,11 @@ contains
     integer, intent(in) :: power, L
     type(Coordinates), intent(in) :: xis(:)
     integer :: i, j, x
-    real(8) :: s, r1, r2, r, p, costh, wcosth, rr, tworr, a1, a2, v1, v2
-    real(8), allocatable :: pl(:), athr(:), lad1(:), lad2(:)
+    real(8) :: r1, r2, r, p, costh, wcosth, rr, tworr, a1, a2, v1, v2, rsq
+    real(8), allocatable :: pltab(:,:), athr(:), lad1(:), lad2(:)
 
     allocate(fkx(0:2,0:L))
-    allocate( pl(NMesh_cos) )
+    allocate( pltab(0:L, NMesh_cos) )
 
     ! k = 0
     do x = 0, L
@@ -1651,71 +1651,64 @@ contains
     !$omp end parallel
     deallocate( athr )
 
-    ! k = 1
+    ! k = 1 and k = 2, fused.
+    !
+    ! Both were `do x; do i; do j` over the same r(i,j) = sqrt(rr_i - 2 r_i r_i'
+    ! * cos_j), which does NOT depend on x.  So f1_func(r) and f2_func(r) -- each a
+    ! 100-point p-mesh Bessel sum, and between them the largest single cost in the
+    ! program (see FINDINGS.md) -- were recomputed for every one of the L+1 values
+    ! of x.  L is Nmax+2, so that was a 19x redundancy on the hot path.
+    !
+    ! Here i is outermost and j next, so the two Bessel sums are evaluated once per
+    ! (i,j) and reused across all x.  Term order is unchanged -- for fixed (i,x) the
+    ! j contributions still accumulate in ascending j, each still formed as
+    ! ((wcosth*Pl)*f)/... -- so the result is bit-identical.  r**2 is likewise
+    ! hoisted, which also removes the per-x __powidf2 call.
+    !
+    ! For fixed i the 2*(L+1) accumulators are the only memory touched and they are
+    ! reused across the whole j loop, so they stay in cache.
+    do x = 0, L
+      do j = 1, NMesh_cos
+        pltab(x,j) = legendre_polynomial(x, cos_Mesh(j))
+      end do
+    end do
+
     do x = 0, L
       allocate(fkx(1,x)%v( size(xis) ) )
       fkx(1,x)%v(:) = 0.d0
-
-      ! legendre_polynomial(x,cos) depends only on (x,j) -- not on i -- but sat in
-      ! the innermost loop, so GSL's Pl was recomputed for every i.  Once per x now.
-      do j = 1, NMesh_cos
-        pl(j) = legendre_polynomial(x, cos_Mesh(j))
-      end do
-
-      !$omp parallel
-      !$omp do private(i, r1, r2, s, costh, wcosth, r, rr, tworr)
-      do i = 1, size(xis)
-        r1 = xis(i)%x1 / sqrt(2.d0)
-        r2 = xis(i)%x2 * sqrt(1.5d0)
-        ! r1**2 + r2**2 and 2*r1*r2 depend only on i; hoisting them out of the j
-        ! loop also removes two __powidf2 calls per inner iteration.
-        rr = r1*r1 + r2*r2
-        tworr = 2.d0*r1*r2
-
-        s = 0.d0
-        do j = 1, NMesh_cos
-          costh = cos_Mesh(j)
-          wcosth = cosw_Mesh(j)
-          r = sqrt(rr - tworr*costh)
-          s = s + wcosth * pl(j) * f1_func(r) / r
-        end do
-        fkx(1,x)%v(i) = s * 0.5d0
-      end do
-      !$omp end do
-      !$omp end parallel
-    end do
-
-    ! k = 2
-    do x = 0, L
       allocate(fkx(2,x)%v( size(xis) ) )
       fkx(2,x)%v(:) = 0.d0
-
-      ! see k = 1: Pl depends only on (x,j), and rr/tworr only on i.
-      do j = 1, NMesh_cos
-        pl(j) = legendre_polynomial(x, cos_Mesh(j))
-      end do
-
-      !$omp parallel
-      !$omp do private(i, r1, r2, s, costh, wcosth, r, rr, tworr)
-      do i = 1, size(xis)
-        r1 = xis(i)%x1 / sqrt(2.d0)
-        r2 = xis(i)%x2 * sqrt(1.5d0)
-        rr = r1*r1 + r2*r2
-        tworr = 2.d0*r1*r2
-
-        s = 0.d0
-        do j = 1, NMesh_cos
-          costh = cos_Mesh(j)
-          wcosth = cosw_Mesh(j)
-          r = sqrt(rr - tworr*costh)
-          s = s + wcosth * pl(j) * f2_func(r) / r**2
-        end do
-        fkx(2,x)%v(i) = s * 0.5d0
-      end do
-      !$omp end do
-      !$omp end parallel
     end do
-    deallocate( pl )
+
+    !$omp parallel
+    !$omp do private(i, j, x, r1, r2, rr, tworr, r, rsq, costh, wcosth, a1, a2)
+    do i = 1, size(xis)
+      r1 = xis(i)%x1 / sqrt(2.d0)
+      r2 = xis(i)%x2 * sqrt(1.5d0)
+      rr = r1*r1 + r2*r2
+      tworr = 2.d0*r1*r2
+
+      do j = 1, NMesh_cos
+        costh = cos_Mesh(j)
+        wcosth = cosw_Mesh(j)
+        r = sqrt(rr - tworr*costh)
+        rsq = r**2
+        a1 = f1_func(r)
+        a2 = f2_func(r)
+        do x = 0, L
+          fkx(1,x)%v(i) = fkx(1,x)%v(i) + wcosth * pltab(x,j) * a1 / r
+          fkx(2,x)%v(i) = fkx(2,x)%v(i) + wcosth * pltab(x,j) * a2 / rsq
+        end do
+      end do
+    end do
+    !$omp end do
+    !$omp end parallel
+
+    do x = 0, L
+      fkx(1,x)%v(:) = fkx(1,x)%v(:) * 0.5d0
+      fkx(2,x)%v(:) = fkx(2,x)%v(:) * 0.5d0
+    end do
+    deallocate( pltab )
 
   end subroutine init_fkx_function
 

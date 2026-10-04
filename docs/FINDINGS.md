@@ -1352,6 +1352,53 @@ Note the shape of this: three times in this session a phase-level summary
 wrong place, and only per-component timing settled it. Timing the smallest named
 parts first would have been cheaper than reasoning about the largest.
 
+## Fixed: a 19x redundancy in `init_fkx_function` — 1.35x, bit-identical — 2026-10-03
+
+`f1_func` and `f2_func` are, between them, the single largest cost in the program
+(11.7 % of the run). Both compute a 100-point p-mesh Bessel sum,
+`sum_i w_i j_l(r p_i) / den_i`, with `l = 1` and `l = 2` respectively, and both are
+called from the k=1 and k=2 blocks of `init_fkx_function`, which were shaped:
+
+```fortran
+do x = 0, L                                  ! x OUTER
+  do i = 1, size(xis)
+    do j = 1, NMesh_cos
+      r = sqrt(rr_i - 2 r_i r_i' cos_j)      ! depends only on (i,j)
+      s = s + wcosth * pl(x,j) * f1_func(r) / r
+```
+
+**`r`, and therefore `f1_func(r)` and `f2_func(r)`, do not depend on `x`** — yet
+they were recomputed for every one of the `L+1` values of `x`. `L` is `Nmax+2`, so
+this was a **19x redundancy on the hottest path in the program**.
+
+The two blocks are now fused with `i` outermost and `j` next, so both Bessel sums
+are evaluated once per `(i,j)` and reused across all `x`; `r**2` is hoisted too
+(removing the per-`x` `__powidf2` call). `Pl` moves into a small `pltab(0:L,
+NMesh_cos)` table computed once.
+
+| 16x2, ccc0499, cold | wall |
+| --- | --- |
+| before | 139 s |
+| **after** | **103 s** (1.35x) |
+
+- **[measured] Bit-identical.** deuteron unchanged, `accept.py` PASS with the same
+  4.01e-06 worst element, and the output identical to the previous binary in **all
+  456 320 values**. The fusion preserves the term order exactly — for fixed `(i,x)`
+  the `j` contributions still accumulate in ascending `j`, each still formed as
+  `((wcosth*Pl)*f)/...` — so this is a pure speedup with provably unchanged physics.
+  That is a stronger result than the 1.34x hoist earlier, which needed a
+  same-binary repeat to establish its reproducibility limits.
+- **[inferred] Why the 1.35x exceeds the ~1.12x the 11.7 % share predicted:** the
+  share was measured on the pre-fusion profile, where the two functions were being
+  called 19x too often. Removing 18/19 of a cost that large releases more than its
+  nominal share, and the fusion also drops 19 parallel regions down to one.
+- **Cumulative on this case at 16x2: 206 s -> 103 s = 2.00x.**
+
+Next: re-profile. The bottleneck has certainly moved — `f1_func`/`f2_func` should
+now be ~0.6 % rather than 11.7 %, and `init_zx_function`'s k=0 ladder (already
+hoisted once, and genuinely `x`-dependent so not hoistable further) is the obvious
+next candidate.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
