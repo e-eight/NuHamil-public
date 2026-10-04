@@ -1014,6 +1014,17 @@ contains
     integer, intent(in) :: l
     real(8), intent(in) :: x
     real(8) :: r, a = 0.d0
+    ! l = 1 and l = 2 have exact closed forms in sin/cos, and they dominate the
+    ! profile (GSL's j1_e + j2_e are 11 % of the work).  For these two orders the
+    ! threshold below evaluates to exp(-4.6e2) and exp(-2.3e2), so it can never
+    ! trigger for a representable x -- bypassing it changes nothing.
+    if(l == 1) then
+      r = spherical_bessel_j1(x)
+      return
+    else if(l == 2) then
+      r = spherical_bessel_j2(x)
+      return
+    end if
     r = 0.d0
     ! threashhold that jl(x) ~ 10^-200 for small x, avoiding the under flow error
     a = exp(-200.d0 / dble(l) * log(10.d0) + dble(2*l+1)/dble(l) * log(dble(2*l+1)) - &
@@ -1021,6 +1032,37 @@ contains
     if(x < a) return
     r = spherical_bessel_c(l,x)
   end function spherical_bessel
+
+  ! j1(x) = sin(x)/x^2 - cos(x)/x.  Near x = 0 the two terms cancel
+  ! catastrophically (both are ~1/x while the result is ~x/3), so use the Taylor
+  ! series there; the crossover at 0.5 leaves both branches good to ~1e-15
+  ! relative, since the cancellation costs only ~1.2 decimal digits at x = 0.5.
+  ! The series branch also returns the correct j1(0) = 0, which the closed form
+  ! cannot evaluate.
+  function spherical_bessel_j1(x) result(r)
+    real(8), intent(in) :: x
+    real(8) :: r, x2
+    if(x < 0.5d0) then
+      x2 = x*x
+      r = x/3.d0 * (1.d0 - x2*(1.d0/10.d0 - x2*(1.d0/280.d0 - x2*(1.d0/15120.d0 &
+          & - x2*(1.d0/1330560.d0 - x2/172972800.d0)))))
+    else
+      r = sin(x)/(x*x) - cos(x)/x
+    end if
+  end function spherical_bessel_j1
+
+  ! j2(x) = (3/x^3 - 1/x) sin(x) - 3 cos(x)/x^2, treated the same way.
+  function spherical_bessel_j2(x) result(r)
+    real(8), intent(in) :: x
+    real(8) :: r, x2
+    if(x < 0.5d0) then
+      x2 = x*x
+      r = x2/15.d0 * (1.d0 - x2*(1.d0/14.d0 - x2*(1.d0/504.d0 - x2*(1.d0/33264.d0 &
+          & - x2/3459456.d0))))
+    else
+      r = (3.d0/(x*x*x) - 1.d0/x)*sin(x) - 3.d0*cos(x)/(x*x)
+    end if
+  end function spherical_bessel_j2
 
   !
   ! isospin function pn formalism
