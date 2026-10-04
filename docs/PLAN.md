@@ -325,6 +325,56 @@ top 4 would give a 1.10x end-to-end gain and the top 8 a 1.22x, against 1.54x fo
 splitting generally — so a special-case path buys a fraction of the prize for most
 of the design cost.
 
+### P3c — Two-body NN SRG flow re-run inside every three-body channel (32x)
+
+*Tracked as fork issue #7. Found 2026-10-03 from a review question; it had never
+been addressed and no record of it existed.*
+
+```
+set_nnn_force_ho_isospin                       (once per THREE-body channel)
+  -> vnn_sub_relspin%SetNNForceHOIsospin(U_sub_relspin, params)   [NNNForceHOIsospin.F90:116]
+     -> renorm_ho_space_isospin                                  [NNForceIsospin.F90:215]
+          requires renorm /= 'bare'  and  renorm_space2 == 'ho'
+          -> do ich = 1, two%NChan
+               call HOSRGChannel(...)                            [:318]
+                 -> sol%init(h,'Hflow'); sol%SRGFlow(...) -> SRGHflow -> dvode_f90
+```
+
+The two-body space comes from `params%N2max` / `params%J2max_NNint`, **not** from
+the three-body channel, so all 32 channels recompute an **identical** two-body NN
+SRG evolution and only the last is used.
+
+*Sizing: unknown and deliberately not guessed.* It cannot be read from the profile —
+one SRG symbol family appears (`srghflow` + `dvode_f90_m`, no `srghuflow`/
+`srgomegaflow`), so the two-body and three-body flows share a symbol, and most of a
+flow's cost is in a dgemm commutator plus two `DiagSym` calls attributed to MKL.
+
+**Stages, each gated:**
+
+1. [ ] **Measure first.** Time the two-body setup inside `set_nnn_force_ho_isospin`
+       per channel, using the existing `#PROF_*` idiom. *Gate:* a share-of-run
+       number, and confirmation it is the same on every channel. **If it is small,
+       stop and record that** — this is cheap and would settle the question.
+2. [ ] **Prove channel-independence numerically, not by reading arguments.** The
+       whole change is unsound if it fails, and a partial cache key is a
+       silent-wrong-physics bug — the worst failure mode here.
+3. [ ] **Cache it**: in-process memo (smallest), or file/broadcast as the 3-body
+       side already does. *Gate:* the key must cover `hw`, `N2max`, `J2max_NNint`,
+       `lambda`, `srg_generator`, `Nmax_srg_edge`, `renorm` and the NN files —
+       test by changing one key input and confirming invalidation.
+4. [ ] **Verify and measure.** deuteron + `accept.py` + output identical in all
+       456 320 values (the same computation is reused, so this should be exact),
+       then a same-node 16x2 A/B against the current **103 s**.
+
+**Not in scope:** the *three-body* `SRGHflow` cost on `ramplarge` (that is P3b), and
+any GPU port of either flow — porting redundant work is wasted work, so this comes
+first. Note P4 is blocked on its own premise for exactly this reason.
+
+Why it is worth doing: it is pure duplicated work with an identical result, and it
+is the third instance this session of the same pattern paying off — the 19x
+`init_fkx_function` redundancy (1.35x, bit-identical), the copy path (1.05x), and
+the hoists before them.
+
 ### P3b — Jacobi-space / ramp cost
 
 - [x] Ramp as an explicit sweep axis (`ramplarge`, `rampsmall`), recorded per run
