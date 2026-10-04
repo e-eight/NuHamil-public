@@ -1084,6 +1084,74 @@ mat = m * ovlp_ket                                ! ProductD alloc+dgemm + assig
   work, but it is the clearest remaining piece of *waste* — pure memory traffic
   doing no arithmetic, in a routine we can name.
 
+## Re-measurement with the current binary: the refactor's prize is 1.54x, and threads saturate at 2 — 2026-10-03
+
+All three refactor-relevant measurements were taken on the `hoist` binary and had
+to be re-taken after the math work. Redone with the current (`ladder`) binary,
+every run cold on ccc0497, every run `accept.py` PASS.
+
+### Configuration (fixed 32 CPUs)
+
+| ranks x threads | wall | effective workers |
+| --- | --- | --- |
+| 8 x 4 | 214 s | 14.0 |
+| **16 x 2** | **148 s** | **20.1** |
+| 32 x 1 | 215 s | 13.8 |
+
+- **[measured] 16x2 is still the optimum, and by a wider margin than before**
+  (1.45x over its neighbours, against 1.31x previously). 32x2 could not be
+  measured: it needs 64 CPUs on one node and ccc0497 had only 36 free.
+- 32x1 is **granularity**-limited (44 % efficiency, matching `max/mean` below);
+  8x4 is **thread**-limited. 16x2 is the better trade of the two.
+
+### Unit histogram (instrumented 32x1)
+
+| quantity | `hoist` | **`ladder`** |
+| --- | --- | --- |
+| total work | 4211.8 s | **2972.3 s** |
+| mean unit | 131.6 s | **92.9 s** |
+| max unit | 249.4 s | **210.5 s** |
+| min unit | 88.8 s | **50.5 s** |
+| **max/mean** | 1.895 | **2.266** |
+| max/min | 2.8x | **4.17x** |
+| perfect split, 31 workers | 135.9 s | **95.9 s** |
+
+- **[measured] The math work removed 1.42x of work but made the distribution
+  *less* uniform**: `max/mean` rose 1.895 -> 2.266 and the spread 2.8x -> 4.17x.
+  The heavy channels shrank less than the light ones, which is the opposite of what
+  I predicted when I assumed the Bessel work sat in the heavy channels.
+- **[measured] So the granularity loss at 32x1 grew**, from 254/135.9 = 1.87x to
+  215/95.9 = **2.24x**.
+
+### The refactor's prize is ~1.5x, not 1.87x
+
+The 1.87x was measured against the *current* 32x1 — but 32x1 is not the
+configuration we use. Measured against the best configuration:
+
+```
+16x2 today            148 s
+perfect split, 32x1    95.9 s      ->  1.54x
+```
+
+Perfect splitting does not help 16x2 (32 units over 15 workers already smooths
+it), so the honest prize for a row-block rewrite is **~1.5x end-to-end**, on one
+node, with a validated unit-cost model that reproduces all three measured
+configurations to within ~1 %.
+
+### Threads saturate at 2 — this is not Amdahl
+
+Phase wall for one channel, same node: **114 s (1 thread), 72 s (2), 71 s (4)**.
+
+- **[measured] Four threads give 1.4 % over two.** The curve is not Amdahl-shaped:
+  from 1->2 threads Amdahl implies `s = 0.26`, from 1->4 it implies `s = 0.50`, and
+  no single `s` fits. It is a **saturation**, not a serial fraction.
+- **[inferred] This supersedes the "~50 % serial fraction" framing.** The phase
+  gains ~1.6x from threads and then stops; per unit there is nothing more to win
+  from threads, and the way to use more CPUs is more *ranks*.
+- That in turn makes the granularity work **better** motivated, not worse: with
+  fine units, 32x1 would approach the 95.9 s ideal, i.e. ~1.5x over the best
+  configuration available today, and it needs one node rather than two.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
