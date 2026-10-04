@@ -158,13 +158,15 @@ The re-profile resets the target list. By cycles: **libm + integer power ~36 %**
       `schedule(dynamic)`, and fusing ~60 regions into 4 all left it unchanged.
       **Do not retry these**; the OpenMP side has at most ~1.94x available and the
       idle is not recoverable by tuning. Changes were reverted as neutral.
-- [ ] **Remaining P3 lever: finer work units — measured at 1.87x.** Instrumented the
-      farm (`#PROF_UNIT` in `MPIFunction.F90`) and read the real unit costs: they span
-      **2.8x (88.8-249.4 s**, max/mean 1.895), so at 32 ranks the makespan *is* the
-      heaviest channel — 254 s measured vs ~136 s with perfect splitting. Subdivide
-      `calc_each_channel` (`TMTransFunctions.inc:70`) into row-block units. Cost-ordered
-      dispatch cannot help: all 32 units are dispatched on the first round with 31
-      workers, so no ordering changes the makespan.
+- [ ] **Remaining P3 lever: finer work units — re-measured at 1.54x; plan in P3-rows
+      below.** Unit costs re-taken on the current binary: 32 units span
+      **49.2-202.7 s, max/mean 2.279**, ideal makespan on 31 workers **91.8 s**, and
+      32x1 measures 213 s. The prize is measured *against the configuration we
+      actually use* (16x2 = 141 s), not against 32x1, so it is **1.54x** — the earlier
+      1.87x compared against a configuration we do not run. The unit decomposes as
+      construction **91.5 %**, SRG 8.4 %, dense **diagonalisation 0.2 %**, so no
+      distributed eigensolver is needed. See `FINDINGS.md`, "What a work unit
+      actually contains".
 - [x] ~~Drop the O(sum dim^2) redistribution~~ **Deprioritised by measurement.** It is
       0.031 s of a 267.8 s run — a memory concern for production sizes, not a time one.
 - [x] ~~Give rank 0 work~~ **Bounded and small.** Rank 0 never calls `Method`, so only
@@ -187,6 +189,105 @@ The re-profile resets the target list. By cycles: **libm + integer power ~36 %**
 - *Exit:* >= 2x on the medium case, numerics match golden, scaling to >= 2 nodes
   *(re-derive the 2x from the corrected baseline before treating it as a target)*
   *(the >= 2x target predates the corrected baseline — re-derive it first)*
+
+### P3-rows — Row-split of the per-channel fill (plan, 2026-10-03)
+
+*Status: planned, not started.*
+
+**Goal.** Remove the granularity loss measured at **1.54x** end-to-end. With 32
+whole-channel units on 31 workers the makespan *is* the heaviest channel (202.7 s
+measured against a 91.8 s ideal), so 32x1 gives 213 s where ~92 s is reachable.
+
+**The split axis is rows of the per-channel matrix.**
+`set_nnn_int_chEFT_n2lo_isospin_local` (`NNNForceHOIsospin.F90:706`) fills
+`this(N,N)`, `N = GetNumberNAStates()`, through five `set_inside` calls, one per
+LEC, whose outer loop is `do ibra = 1, N` with `do iket = 1, ibra`. Row `ibra`
+reads only `this%m(ibra,1:ibra)` — zero before the first LEC, then accumulated
+from its own row — plus the bra/ket quantum numbers. **Rows are therefore
+independent**, and a row range can be computed on its own.
+
+Two properties make this safe to do:
+
+- **Write-once.** Row `i` writes `m(i,j)` and `m(j,i)` for `j <= i`. Every element
+  is written by exactly one owner — the owner of row `i` — so **no reduction and no
+  conflict resolution is needed**. That is the single most valuable property here.
+- **Triangular cost.** Row `i` costs ~`i` matrix elements, so equal row *counts*
+  are badly unequal work. Use **strided ownership** (rank `r` takes rows
+  `r, r+K, r+2K, ...`), which gives each rank ~`N^2/(2K)` work by construction.
+  Contiguous blocks would need sqrt-spaced boundaries and would still be sensitive
+  to per-element cost variation.
+
+**Design: two farm stages.**
+
+1. **Fill stage.** Unit = (channel, row block). Each unit reads `jac` (already a
+   file), computes its rows, writes them to a per-`(channel,block)` partial file
+   under the run's tmp dir. Unit count becomes `sum_ch K(ch)`.
+2. **Assembly stage.** A second `parent_child_procedure` over channels: one rank per
+   channel reads its partials, assembles the full `this`, then runs the existing
+   post-processing — `cfp^T * this * cfp`, the non-local regulator, the
+   diagonalisation and the SRG flow — and writes the channel's output files.
+
+Stage 2 is why the ceiling is ~11x rather than 31x: it serialises ~9 % of a unit
+per channel (SRG 8.4 %, diag 0.2 %, plus the gather). For the heaviest channel that
+is ~18 s of work that cannot be split, which also sets a sensible minimum block
+size — blocks much below that buy little.
+
+**Blocking rule.** `K(ch) = max(1, ceil(cost(ch)/target))` with `target ~ 30 s`, so
+the largest block stays well under the 91.8 s floor and packing stays smooth.
+`cost(ch)` is available from a `#PROF_UNIT` run; until then the triangular model
+`cost ~ N^2/2` is good enough to start.
+
+**Prerequisite: guard `v` (cheap, independent, do this first).** In the same
+routine, `v` is allocated as `N(N+1)/2` and written for *every* element in all five
+LEC passes, but it is only **read when `save_3nf_before_lec` is true** — which is
+`.false.` by default and unset in our inputs. Guard the allocation and the writes.
+This removes a ~`N^2/2` array from the split design *and* is a candidate small win
+on its own, measurable in isolation before any MPI work.
+
+**Staged implementation, with a verification gate at each stage.**
+
+1. Guard `v`. *Gate:* deuteron + `accept.py` + output unchanged; measure alone.
+2. Add optional row-range arguments to `set_nnn_int_chEFT_n2lo_isospin_local` /
+   `set_inside`, defaulting to the full range. **No MPI yet.** *Gate:* the
+   whole-channel path reproduces the current output **exactly**. This proves row
+   restriction is sound before any communication exists — the cheapest possible
+   place to discover that it is not.
+3. Run one channel split `K` ways in-process and compare against the whole-channel
+   matrix. *Gate:* identical within `accept.py` tolerance.
+4. Wire the two stages into the farm. *Gate:* full case at 32x1 against the 91.8 s
+   ideal, then a 16x2 A/B against 141 s.
+
+**Risks, each with the measurement that retires it.**
+
+- **Per-block setup duplication.** Each rank runs `nnn_force%init` plus five
+  `nnn_force%set` calls (the `fk`/`fkx`/`zx` precomputations) for its own block. If
+  that is a large share of a block, finer blocks lose more than they gain. Profile
+  `init`+`set` against `set_inside` and **measure before choosing K** — this is
+  exactly the trap that made the `chEFT_n2lo` copy rewrite worthless.
+- **Gather cost.** `sum_ch K(ch)` partial files, each `rows x N` doubles. File I/O
+  is already the idiom here (three cache levels), but this multiplies file count;
+  watch metadata overhead on scratch.
+- **Peak memory.** Unchanged in stage 2 (one rank still holds a full `N x N`);
+  lower in stage 1.
+- **Checkpoint/resume.** The `s%isfile(fv) .and. s%isfile(fut)` early-return is per
+  channel. The final `fv`/`fut` must remain the *only* completion signal, with
+  partials treated as scratch, or a resumed run will mistake partial output for a
+  finished channel.
+- **Cache interaction.** The 1.54x assumes per-unit work is unchanged when split.
+  Cache behaviour could move either way and the model cannot see it — hence the
+  stage-3 gate on a real split channel rather than trusting the arithmetic.
+- **Threads.** Threads saturate at 2, so this split is about using more *processes*.
+  Keep `16x2` as the reference and re-check 32x1 vs 16x2 after stage 4.
+
+**Non-goals.** No distributed eigensolver (diagonalisation is 0.2 %); no change to
+the redistribution (0.031 s); no change to `calc_each_channel`'s channel-level
+caching, which is what makes reruns cheap.
+
+**Not planned: splitting only the largest few channels.** The imbalance is broad,
+not one outlier (202.7, 160.7, 160.5, 128.4, 126.1, ... down to 49.2). Halving the
+top 4 would give a 1.10x end-to-end gain and the top 8 a 1.22x, against 1.54x for
+splitting generally — so a special-case path buys a fraction of the prize for most
+of the design cost.
 
 ### P3b — Jacobi-space / ramp cost
 
