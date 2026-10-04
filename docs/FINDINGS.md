@@ -973,6 +973,78 @@ and the row-block refactor would be a large change bought on stale evidence.
 **Re-measure the granularity and configuration picture with the current binary
 before starting it** — a few runs, versus a rewrite.
 
+## The "MKL copy path" is DMat's copy-heavy matrix algebra — 2026-10-03
+
+Investigating the ~9 s (1-thread) MKL spends outside the multiply kernel, because
+a bandwidth-limited workload pays twice for copies: they consume bandwidth and
+they do not parallelise (`xdcopy` scales only 1.25x on 4 threads).
+
+### What the algebra is doing
+
+`DMat` comes from the `LinAlgf90` submodule. Reading it, every matrix operation
+allocates and copies:
+
+- `operator(*)` -> `MatrixProductD` (`MatrixDouble.f90:100`): **allocates a new
+  DMat** and dgemms into it, so `a * b` never writes into a target.
+- `assignment(=)` -> `MatrixCopyD` (`LinAlgLib.f90:114`, `MatrixDouble.f90:87`):
+  a *defined assignment* that copies with a **column-by-column `dcopy` loop**
+  (`do i = 1, n; call dcopy(m, a%m(:,i), 1, b%m(:,i), 1)`).
+- `%T()` -> `Trans` (`MatrixDouble.f90:186`): materialises a transpose into a new
+  matrix via `b%M = transpose(a%M)`.
+- `MatrixSumD`, `MatrixSubtractD` and the `MatrixScale*` family all route through
+  `MatrixCopyD` as well.
+
+So in `multiply_non_local_regulator_hospace` the two expressions
+
+```fortran
+work = cfp%T() * work * cfp
+this = work%T() * this * work
+```
+
+each cost a transpose copy, two allocations, two dgemms, **and a full nphys x
+nphys copy in the assignment** — when two dgemms writing into the destination
+would do. `dcopy` resolves to `mkl_blas_def_xdcopy`, which is the symbol the
+profile shows.
+
+### Why it matters beyond its own share
+
+- **[measured]** `xdcopy` is 3.7 s of 114 s at 1 thread and 2.9 s of 71 s at 4 —
+  i.e. it barely speeds up, which is exactly what a pure memory copy should do.
+  `__matrixdouble_MOD_trans` (the transpose copies) behaves the same, 1.2 -> 0.6 s.
+- **[inferred]** These copies are pure memory traffic on a workload that looks
+  bandwidth-limited, so their cost is not limited to their own ~5 % — they also
+  compete for the bandwidth everything else needs.
+
+### The codebase already contains the better pattern
+
+`ThreeBodyJacOpsChanIso.F90:1051-1068` calls `dgemm` **explicitly with a
+preallocated temporary** instead of using the operators:
+
+```fortran
+call dgemm('n','n', l, n, m, 1.d0, Mat_NonAsym%m, l, cfp1%m, m, 0.d0, tmp%m, l)
+call dgemm('t','n', k, n, l, 1.d0, cfp1%m, l, tmp%m,    l, 0.d0, this%DMat%m, k)
+```
+
+That form needs no transpose copy, no result allocation and no assignment copy.
+Converting the few hot operator expressions to it is a **local change at the call
+sites in `src/ThreeBody/`**, which is preferable to editing the third-party
+submodule.
+
+- **Do not** be tempted to make `MatrixCopyD` use `move_alloc`: a defined
+  assignment cannot tell a temporary from a named argument, so it would silently
+  steal the storage of a variable the caller still needs.
+- A single contiguous `dcopy(m*n, ...)` instead of `n` column calls is *not* the
+  fix: each column is already contiguous, so the copy volume is the cost, not the
+  call count.
+
+### Caveat / next measurement
+
+`mkl_def` also exports `mkl_blas_def_dgemm_dcopy_notrans/_trans`, so part of the
+`xdcopy` time could come from **dgemm's own internal copying** rather than from
+`MatrixCopyD`. The flat profile cannot separate them (`MatrixCopyD` is small
+enough to be inlined). One call-graph profile of `mkl_blas_def_xdcopy`'s callers
+would settle the attribution before any code is changed.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
