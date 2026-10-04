@@ -1346,6 +1346,46 @@ same 4x1 configuration. flat28 (n=1575) took only **178 s** wall, so flat40 is
 extrapolation or the observation is wrong, without the 8-way concurrency of the
 original run. Only then is a fix proposal worth writing.
 
+## Operational: an over-long `--time` makes a job unstartable, reported as "Priority" — 2026-10-03
+
+Three ladder jobs (flat32/36/40) sat `PENDING (Priority)` for over 40 minutes on
+scavenger. The node they were pinned to had **74 of 128 CPUs idle and ~995 GB free**,
+so neither capacity nor the pin was the cause.
+
+**My first diagnosis was wrong.** I told the user the `--nodelist=ccc0499` pin was the
+trap, on the reasoning that no *other* pending job targeted that node. A probe sweep
+refuted it: a 1-CPU job pinned to ccc0499 ran in 6 seconds.
+
+**The actual cause is the time limit.** Probes of identical shape (4 CPU, 96 G, pinned
+to ccc0499, same 74 idle CPUs), varying only `--time`:
+
+| request | outcome |
+| --- | --- |
+| 4 CPU / 96 G / 00:05:00 | ran immediately |
+| 4 CPU / 96 G / 01:00:00 | ran immediately |
+| 4 CPU / 96 G / 01:30:00 | ran immediately |
+| 4 CPU / 96 G / 02:00:00 | **PENDING (Priority)** |
+| 4 CPU / 96 G / 04:00:00 | **PENDING (Priority)** |
+| 4 CPU / 64 G / 04:00:00 | PENDING (Priority) — memory size is irrelevant |
+| 1 CPU / 96 G / 00:05:00 | ran immediately — CPU count is irrelevant once time is short |
+
+- **[measured] Slurm's backfill will only start a job if it can finish before the
+  resources are needed by higher-priority pending work.** ccc0499's idle CPUs are
+  spoken for in the near future, so the backfill window is currently between 1.5 h and
+  2 h. Any job whose `--time` exceeds that window cannot start — and Slurm reports the
+  reason as **`Priority`**, which reads like "you are far down the queue" when it
+  actually means "your own time limit is too long to fit".
+- **[measured] The window moves.** `--time=02:00:00` ran the flat20/24/28 rungs
+  earlier the same day and does not fit now. There is no fixed threshold to memorise.
+- **[inferred] The operational rule: set `--time` as close to the expected runtime as
+  you can justify.** A generous time limit is not free — on a busy preemptible
+  partition it can make a job unschedulable. All three rungs started within seconds
+  once resubmitted at `--time=01:30:00`.
+
+This is the second time today a Slurm-level detail cost a measurement cycle rather
+than the physics doing so; the first was `set -euo pipefail` plus a missing
+`manifest.json` aborting `run_case.sbatch` with no diagnostic at all (now fixed).
+
 ## The memory hypothesis for `ramplarge` is REFUTED — 2026-10-03
 
 Tested because the recorded explanation for `ramplarge` being ~770x slower per
