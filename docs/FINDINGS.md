@@ -1118,6 +1118,42 @@ block after a `return`.
   thread is running alone. That is a second, independent hint that the
   bandwidth reading is the right one.
 
+### Second attempt, on `set_nnn_interaction_chEFT_n2lo`: NEGATIVE — reverted
+
+The same copy-heavy pattern appears in the routine that dominates every work unit:
+
+```fortran
+cfp = jac%GetCFPMat()
+call set_nnn_int_chEFT_n2lo_isospin(work, jac, LECs, ...)
+this%DMat = cfp%T() * work * cfp        ! transpose + 2 temporaries + result copy
+```
+
+I recommended rewriting it as two explicit `dgemm`s writing into preallocated
+storage, on the grounds that its share of the work is 91.5 % and so its copy
+overhead should be "larger in absolute terms". **That reasoning was wrong, and the
+evidence against it was already in hand**: the `dcopy` attribution had given this
+routine exactly **1 sample out of 587**. Presence of a pattern is not evidence of
+its cost.
+
+- **[measured] Implemented and measured anyway rather than argued.** Same-node
+  A/B on ccc0499, 16x2, cold: **139 s (before) vs 139 s (after) — no benefit.**
+- **[measured] It was numerically exact**: deuteron unchanged, `accept.py` PASS,
+  and the output identical in all 456 320 values, so the two-dgemm sequence does
+  reproduce the operator form. The rewrite was *correct*, just worthless.
+- **Reverted**, on the same principle as `-march`: a change with no measured
+  benefit is not worth carrying, especially one that hand-rolls a `dgemm` the
+  library already expressed.
+- **[inferred] Why it is free here but not in `transform_xis_to_ho`:** there the
+  copies were large relative to the arithmetic in that specific routine; here the
+  same expression sits next to `set_nnn_int_chEFT_n2lo_isospin`, whose cost
+  dwarfs it. The copy volume is set by `north x nphys`, while the surrounding
+  work is `nphys^2 x north` — so the copies are asymptotically smaller.
+- Note the identical expression also appears at `NNNForceHOIsospin.F90:296` in
+  the `_n3lo` variant, unused for this case. Left alone.
+
+**Lesson recorded**: two copy-heavy call sites, same source pattern, opposite
+outcomes — 1.05x and 0.00x. Only measurement distinguishes them.
+
 ## Re-measurement with the current binary: the refactor's prize is 1.54x, and threads saturate at 2 — 2026-10-03
 
 All three refactor-relevant measurements were taken on the `hoist` binary and had
