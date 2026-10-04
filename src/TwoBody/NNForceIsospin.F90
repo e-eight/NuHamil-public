@@ -329,7 +329,7 @@ contains
 
   subroutine HOSRGChannel(v, u, ms, alpha, hw, generator_type, Nmax_srg_edge)
     use OperatorDefinitions, only: CalcMERel, OperatorDef
-    use Renormalization, only: SRGSolver
+    use Renormalization, only: SRGSolver, srg_flow_tag
     type(DMat), intent(inout) :: v, u
     type(TwoBodyRelChanSpinIsoHOBasis), intent(in) :: ms
     type(HarmonicOscillator), pointer :: ho_bra, ho_ket
@@ -401,6 +401,8 @@ contains
     end do
 
     h = t + v
+    ! Label this flow for #PROF_FLOW: it and the three-body flow share SRGHflow.
+    srg_flow_tag = 'NN-2body'
     !call sol%init(h, 'HUflow')
     call sol%init(h, 'Hflow')
     if( n_zero > 0 ) call sol%SRGFlow(h, generator, alpha, rhs_zero_term)

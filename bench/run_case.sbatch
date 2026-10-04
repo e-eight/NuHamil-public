@@ -88,7 +88,14 @@ if [ -z "$INPUT" ]; then
     exit 2
 fi
 
-KIND="$(sed -n 's/.*"kind": *"\([A-Za-z0-9]*\)".*/\1/p' manifest.json 2>/dev/null | head -n1)"
+# A missing manifest.json used to kill the job here: `sed file` exits 2, pipefail
+# propagates it, set -e aborts -- with NO diagnostic at all, because every echo in
+# this script comes later.  Warn instead, so the failure is legible.
+if [ ! -f manifest.json ]; then
+    echo "WARNING: no manifest.json in $RUNDIR; kind unknown (MPI support cannot be" >&2
+    echo "         checked, and the recorded metadata will be incomplete)." >&2
+fi
+KIND="$(sed -n 's/.*"kind": *"\([A-Za-z0-9]*\)".*/\1/p' manifest.json 2>/dev/null | head -n1 || true)"
 if [ "$NTASKS" -gt 1 ] && [ "$KIND" != "namelist3" ]; then
     echo "WARNING: kind=$KIND has no MPI support (only 3N lab-frame does); NuHamil will stop." >&2
 fi

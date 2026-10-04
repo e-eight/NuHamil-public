@@ -174,7 +174,7 @@ contains
 
   subroutine three_body_srg_evolution(h, gen, U, lambda, Nmax_srg_edge)
     use MyLibrary, only: hc, m_proton, m_neutron
-    use renormalization, only: SRGSolver
+    use renormalization, only: SRGSolver, srg_flow_tag
     type(DMat), intent(inout) :: h, U
     type(ThreeBodyJacOpChanIso), intent(in) :: gen
     integer, intent(in) :: Nmax_srg_edge
@@ -205,6 +205,8 @@ contains
       rhs_zero_term(n_zero) = ket
     end do
 
+    ! Label this flow for #PROF_FLOW: it and the two-body NN flow share SRGHflow.
+    srg_flow_tag = '3body'
     call sol%init(h, 'Hflow')
     !call sol%init(h, 'Hflow', atol=1.d-6, rtol=1.d-7)
     if(n_zero==0) call sol%SRGFlow(h, gen%DMat, alpha)

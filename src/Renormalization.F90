@@ -7,9 +7,18 @@ module Renormalization
 
   public :: LeeSuzukiSolver
   public :: SRGSolver
+  public :: srg_flow_tag
 
   private :: Inils, finls, LeeSuzuki
   private :: inisrg, finsrg, SRGHFlow, SRGHUFlow, SRGOmegaFlow
+
+  ! Which caller is currently running a flow.  The two-body NN flow
+  ! (HOSRGChannel, in NNForceIsospin) and the three-body flow
+  ! (three_body_srg_evolution, in NNNForceHOIsospin) BOTH go through SRGHflow, so a
+  ! profile cannot attribute them without this label: only one SRG symbol family
+  ! appears, and most of a flow's cost sits in the ODE right-hand side and two
+  ! DiagSym calls, i.e. attributed to MKL.  Set by the callers, reported by #PROF_FLOW.
+  character(24) :: srg_flow_tag = '(unset)'
 
   type :: LeeSuzukiSolver
     ! H: transformed Hamiltonian
@@ -95,6 +104,11 @@ contains
     integer :: istats(31)
     type(vode_opts) :: options
     real(8) :: ti
+    ! #PROF_FLOW: what is a flow actually spending its time on?  The question this
+    ! answers is whether a heavy channel's cost is the ODE integration (many
+    ! right-hand-side evaluations) or the two dense diagonalisations that follow it —
+    ! the fixes are completely different (integrator settings/method vs eigensolver).
+    real(8) :: t0, t_ode, t_diag, t_u
 
     ti = omp_get_wtime()
 
@@ -119,9 +133,11 @@ contains
     options = set_opts(method_flag=10, abserr=this%atol, relerr=this%rtol, mxstep=50000)
     !options = set_normal_opts(dense_j = .true., abserr_vector = atol, relerr = relerr)
     !options = set_opts(sparse_j=.true., abserr=this%atol, relerr=this%rtol, mxstep=100000, nzswag=20000)
+    t0 = omp_get_wtime()
     call dvode_f90(h_equation, n_ode, vec_evolution, start_point, alpha, itask, istate, options)
     call get_stats(rstats, istats)
     call release_arrays()
+    t_ode = omp_get_wtime() - t0
     !$omp parallel
     !$omp do private(i, j)
     do i = 1, n
@@ -135,10 +151,14 @@ contains
     deallocate(vec_evolution)
     call eta%fin(); call rhs%fin()
 
+    t0 = omp_get_wtime()
     call sbare%init(hin)
     call sbare%DiagSym(hin)
     call seff%init(this%h)
     call seff%DiagSym(this%h)
+    t_diag = omp_get_wtime() - t0
+
+    t0 = omp_get_wtime()
     do i = 1, n
       prod = dot_product(sbare%vec%m(:,i),seff%vec%m(:,i))
       if(prod < 0.d0) then
@@ -147,9 +167,19 @@ contains
       end if
     end do
     this%u = sbare%vec * seff%vec%T()
+    t_u = omp_get_wtime() - t0
 
     call sbare%fin()
     call seff%fin()
+
+    ! #PROF_FLOW.  ISTATS indices from dvode_f90_m.f90: (11)=NST steps, (12)=NFE
+    ! right-hand-side evaluations, (13)=NJE Jacobian evaluations, (14)=NQU order last
+    ! used.  A cost that is O(n^3) per RHS is expected; an exploding NST is not, and
+    ! would point at the integrator rather than the arithmetic.
+    write(*,'(a,a,a,i7,a,i8,a,i8,a,i6,a,i3,a,3f11.3,a,f11.3)') &
+        & '#PROF_FLOW tag=', trim(srg_flow_tag), ' n=', n, ' steps=', istats(11), &
+        & ' nfe=', istats(12), ' nje=', istats(13), ' order=', istats(14), &
+        & ' ode/diag/u=', t_ode, t_diag, t_u, ' total=', omp_get_wtime() - ti
 
     call timer%add(sy%str('SRG H flow'), omp_get_wtime() - ti)
   contains
