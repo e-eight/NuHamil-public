@@ -1554,9 +1554,11 @@ contains
     integer, intent(in) :: power, L
     type(Coordinates), intent(in) :: xis(:)
     integer :: i, j, x
-    real(8) :: s, r1, r2, r, p, costh, wcosth
+    real(8) :: s, r1, r2, r, p, costh, wcosth, rr, tworr
+    real(8), allocatable :: pl(:)
 
     allocate(fkx(0:2,0:L))
+    allocate( pl(NMesh_cos) )
 
     ! k = 0
     do x = 0, L
@@ -1586,18 +1588,28 @@ contains
       allocate(fkx(1,x)%v( size(xis) ) )
       fkx(1,x)%v(:) = 0.d0
 
+      ! legendre_polynomial(x,cos) depends only on (x,j) -- not on i -- but sat in
+      ! the innermost loop, so GSL's Pl was recomputed for every i.  Once per x now.
+      do j = 1, NMesh_cos
+        pl(j) = legendre_polynomial(x, cos_Mesh(j))
+      end do
+
       !$omp parallel
-      !$omp do private(i, r1, r2, s, costh, wcosth, r)
+      !$omp do private(i, r1, r2, s, costh, wcosth, r, rr, tworr)
       do i = 1, size(xis)
         r1 = xis(i)%x1 / sqrt(2.d0)
         r2 = xis(i)%x2 * sqrt(1.5d0)
+        ! r1**2 + r2**2 and 2*r1*r2 depend only on i; hoisting them out of the j
+        ! loop also removes two __powidf2 calls per inner iteration.
+        rr = r1*r1 + r2*r2
+        tworr = 2.d0*r1*r2
 
         s = 0.d0
         do j = 1, NMesh_cos
           costh = cos_Mesh(j)
           wcosth = cosw_Mesh(j)
-          r = sqrt(r1**2 + r2**2 - 2.d0*r1*r2*costh)
-          s = s + wcosth * legendre_polynomial(x,costh) * f1_func(r) / r
+          r = sqrt(rr - tworr*costh)
+          s = s + wcosth * pl(j) * f1_func(r) / r
         end do
         fkx(1,x)%v(i) = s * 0.5d0
       end do
@@ -1610,24 +1622,32 @@ contains
       allocate(fkx(2,x)%v( size(xis) ) )
       fkx(2,x)%v(:) = 0.d0
 
+      ! see k = 1: Pl depends only on (x,j), and rr/tworr only on i.
+      do j = 1, NMesh_cos
+        pl(j) = legendre_polynomial(x, cos_Mesh(j))
+      end do
+
       !$omp parallel
-      !$omp do private(i, r1, r2, s, costh, wcosth, r)
+      !$omp do private(i, r1, r2, s, costh, wcosth, r, rr, tworr)
       do i = 1, size(xis)
         r1 = xis(i)%x1 / sqrt(2.d0)
         r2 = xis(i)%x2 * sqrt(1.5d0)
+        rr = r1*r1 + r2*r2
+        tworr = 2.d0*r1*r2
 
         s = 0.d0
         do j = 1, NMesh_cos
           costh = cos_Mesh(j)
           wcosth = cosw_Mesh(j)
-          r = sqrt(r1**2 + r2**2 - 2.d0*r1*r2*costh)
-          s = s + wcosth * legendre_polynomial(x,costh) * f2_func(r) / r**2
+          r = sqrt(rr - tworr*costh)
+          s = s + wcosth * pl(j) * f2_func(r) / r**2
         end do
         fkx(2,x)%v(i) = s * 0.5d0
       end do
       !$omp end do
       !$omp end parallel
     end do
+    deallocate( pl )
 
   end subroutine init_fkx_function
 
