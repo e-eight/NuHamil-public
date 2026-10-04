@@ -190,11 +190,43 @@ The re-profile resets the target list. By cycles: **libm + integer power ~36 %**
   *(re-derive the 2x from the corrected baseline before treating it as a target)*
   *(the >= 2x target predates the corrected baseline — re-derive it first)*
 
-### P3-rows — Row-split of the per-channel fill (plan, 2026-10-03)
+### P3-rows — Row-split of the per-channel fill — **ABANDONED: measurement invalidated it**
 
-*Status: planned, not started.*
+*Status: stages 1-2 done; the split itself abandoned 2026-10-03. Kept for the record
+and because the stage-2 plumbing is inert and verified.*
 
-**Goal.** Remove the granularity loss measured at **1.54x** end-to-end. With 32
+**Outcome: the element loop is 1 % of the routine.** Stage 2 added optional
+row-range arguments plus `#PROF_SPLIT`, which times the three phases of
+`set_nnn_int_chEFT_n2lo_isospin_local` over all 32 channels (16x2, ccc0499):
+
+| phase | total | share |
+| --- | --- | --- |
+| `nnn_force%init` | 646.2 s | **42.2 %** |
+| `nnn_force%set` (5 per channel) | 869.6 s | **56.8 %** |
+| **`set_inside` — the element loop** | **14.7 s** | **1.0 %** |
+| `release` | 0.2 s | 0.0 % |
+
+Row-splitting would parallelise 14.7 s of 1531 s while **duplicating the 42 % init
+per block** — it would have made things worse. The plan came from reading
+"construct 91.5 %" in `#PROF_PHASE` as the (bra,ket) element loop; it is not.
+
+- **[measured] The per-channel cost variation lives in `set`, not the loop.**
+  `init` costs 18.0-22.9 s per channel (1.27x spread, nearly constant), `set` spans
+  1.68-69.3 s (41x). Both dominant phases are per-channel and not row-decomposable,
+  so neither the granularity argument nor the split survives.
+- **[kept] Stage 2's row-range plumbing is verified** — the whole-channel path
+  reproduces the output exactly, all 456 320 values identical — and inert.
+- **[new lead] `precalculations`** (`NNNForceLocal.F90:1293`), called per channel:
+  8 coupling-store `%init`s plus the r/p/cos meshes, the `radial_ho_wf` table and 5
+  mesh/function tables. Most depend only on `Nmax` (only `jjx` takes `Jtot`), so a
+  per-channel rebuild of channel-independent tables is the prime suspect for the
+  ~20 s x 32. **Next: time each sub-init inside `precalculations`.**
+
+The design reasoning below is retained to document why the approach looked
+attractive, and because the row-independence argument would apply to any future
+row-parallel scheme.
+
+**Goal (as planned).** Remove the granularity loss measured at **1.54x** end-to-end. With 32
 whole-channel units on 31 workers the makespan *is* the heaviest channel (202.7 s
 measured against a 91.8 s ideal), so 32x1 gives 213 s where ~92 s is reachable.
 

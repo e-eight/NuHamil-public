@@ -704,7 +704,7 @@ contains
 
   ! limitation: power of local regulator and non-local regulator have to be same
   subroutine set_nnn_int_chEFT_n2lo_isospin_local(this, jac, LECs, lam_local, RegulatorPower, &
-      & save_3nf_before_lec, J3max_initial_3nf, path_to_dir)
+      & save_3nf_before_lec, J3max_initial_3nf, path_to_dir, ibra_first_in, ibra_step_in)
     use NNNForceLocal, only: NNNIntLocal
     use MyLibrary, only: gauss_legendre
     type(DMat), intent(inout) :: this
@@ -713,12 +713,24 @@ contains
     integer, intent(in) :: RegulatorPower, J3max_initial_3nf
     logical, intent(in) :: save_3nf_before_lec
     type(str), intent(in) :: path_to_dir
+    ! Optional row sub-range, for the planned row-split (PLAN.md, P3-rows): compute
+    ! only rows ibra_first, ibra_first+ibra_step, ...  The defaults are the full
+    ! range, so the whole-channel path is unchanged.  Row i writes m(i,j) and
+    ! m(j,i) for j <= i, so ANY row set -- strided included -- writes every element
+    ! exactly once and needs no reduction or conflict resolution.
+    integer, intent(in), optional :: ibra_first_in, ibra_step_in
     integer(8) :: n
     type(NNNIntLocal) :: nnn_force
     real(8), allocatable :: v(:)
     type(str) :: fn
     type(sys) :: s
+    integer :: ibra_first, ibra_step
+    real(8) :: t_init, t_set, t_inside, t_rel
     !
+    ibra_first = 1
+    ibra_step  = 1
+    if( present(ibra_first_in) ) ibra_first = ibra_first_in
+    if( present(ibra_step_in) )  ibra_step  = ibra_step_in
     if (jac%GetNumberNAStates() < 1) return
     if( jac%GetJ() > J3max_initial_3nf ) return
     fn = get_file_name_ho_partial_wave_n2lo_isospin(jac, jac%GetNmax(), &
@@ -738,42 +750,49 @@ contains
     end if
     call this%zeros(jac%GetNumberNAStates(), jac%GetNumberNAStates())
 
+    t_init = omp_get_wtime()
     call nnn_force%init(jac%GetJ(), jac%GetParity(), jac%GetT(), jac%GetNmax(), &
         & jac%GetFrequency(), xmin_in=0.d0, xmax_in=15.d0, &
         & lambda_in = lam_local, regulator_power_in = RegulatorPower)
+    t_init = omp_get_wtime() - t_init
 
     if(save_3nf_before_lec) open(50, file = fn%val, form = 'unformatted', access = 'stream')
     if(save_3nf_before_lec) write(50) jac%GetJ(), jac%GetParity(), jac%GetT(), jac%GetNmax(), n
 
-    call nnn_force%set("c1")
-    call set_inside(this, v, nnn_force, LECs(1))
-    if(save_3nf_before_lec) write(50) v
-    call nnn_force%release()
-
-    call nnn_force%set("c3")
-    call set_inside(this, v, nnn_force, LECs(2))
-    if(save_3nf_before_lec) write(50) v
-    call nnn_force%release()
-
-    call nnn_force%set("c4")
-    call set_inside(this, v, nnn_force, LECs(3))
-    if(save_3nf_before_lec) write(50) v
-    call nnn_force%release()
-
-    call nnn_force%set("cD")
-    call set_inside(this, v, nnn_force, LECs(4))
-    if(save_3nf_before_lec) write(50) v
-    call nnn_force%release()
-
-    call nnn_force%set("cE")
-    call set_inside(this, v, nnn_force, LECs(5))
-    if(save_3nf_before_lec) write(50) v
-    call nnn_force%release()
+    ! #PROF_SPLIT separates the per-LEC setup (nnn_force%set -> precalculations) from
+    ! the element loop.  This matters for the row-split: setup is repeated per block,
+    ! so if it is a large share of a block, finer blocks lose more than they gain.
+    t_set = 0.d0
+    t_inside = 0.d0
+    t_rel = 0.d0
+    call run_phase("c1", LECs(1))
+    call run_phase("c3", LECs(2))
+    call run_phase("c4", LECs(3))
+    call run_phase("cD", LECs(4))
+    call run_phase("cE", LECs(5))
     call nnn_force%fin()
+    write(*,'(a,a,i5,a,i3,4f10.3)') '#PROF_SPLIT ', 'first/step=', ibra_first, '/', ibra_step, &
+        & t_init, t_set, t_inside, t_rel
 
     if(save_3nf_before_lec) close(50)
     deallocate(v)
   contains
+
+    subroutine run_phase(name, lec)
+      character(*), intent(in) :: name
+      real(8), intent(in) :: lec
+      real(8) :: t0
+      t0 = omp_get_wtime()
+      call nnn_force%set(name)
+      t_set = t_set + omp_get_wtime() - t0
+      t0 = omp_get_wtime()
+      call set_inside(this, v, nnn_force, lec)
+      t_inside = t_inside + omp_get_wtime() - t0
+      if(save_3nf_before_lec) write(50) v
+      t0 = omp_get_wtime()
+      call nnn_force%release()
+      t_rel = t_rel + omp_get_wtime() - t0
+    end subroutine run_phase
 
     subroutine set_inside(that, vtmp, tmp, lec)
       type(DMat), intent(inout) :: that
@@ -787,7 +806,7 @@ contains
 
       !$omp parallel
       !$omp do private(ibra, bra, iket, ket, nelm, v3) schedule (dynamic)
-      do ibra = 1, jac%GetNumberNAStates()
+      do ibra = ibra_first, jac%GetNumberNAStates(), ibra_step
         bra => jac%GetNAS(ibra)
         do iket = 1, ibra
           ket => jac%GetNAS(iket)
