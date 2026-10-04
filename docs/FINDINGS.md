@@ -1282,6 +1282,70 @@ had been proposing for several turns rested on a wrong mental model.
   (`cfp = jac%GetCFPMat()` then `this%DMat = cfp%T() * work * cfp`) — though that
   was later measured as worthless too (see "Second attempt").
 
+## `#PROF_FLOW`: a flow is the ODE, and the three-body flow is n^3.1 — 2026-10-03
+
+`#PROF_FLOW` (stage 1 of P3b-i) reports per flow: `tag` (two- vs three-body), `n`,
+DVODE `steps`/`nfe`, and the split **ode / diag / u**. First question it was built to
+answer: is a flow's cost the ODE integration or the two dense diagonalisations that
+follow it? **Decisively the ODE: 95-98.7 % of every flow, with diag+u at 1-5 %.**
+
+**The ladder.** `ramp = "flat<NN>"` (all channels at one Nmax) with `jmax3 = 1`
+(4 channels, J=1/2, Nmax varied), 4 ranks x 1 thread, ccc0499, cold:
+
+| rung | 3body `n_max` | 3body flow sum | `construct` sum | NN-2body flow sum | NN/3body | **SRG share of channel** |
+| --- | --- | --- | --- | --- | --- | --- |
+| flat16 | 351 | 1.18 s | 37.75 s | **4.432 s** | 3.74 | 3.1 % |
+| flat20 | 632 | 8.15 s | 64.00 s | **4.447 s** | 0.55 | 11.5 % |
+| flat24 | 1033 | 31.98 s | 113.51 s | **4.444 s** | 0.139 | 22.2 % |
+| flat28 | 1575 | 144.11 s | 205.21 s | **4.443 s** | 0.031 | 41.3 % |
+
+- **[measured] The three-body flow cost scales as `n^3.12`.** Heaviest single flow:
+  n=351 0.676 s, 632 4.332 s, 1033 17.677 s, 1575 72.891 s. Successive exponents
+  3.16 / 2.86 / 3.36 over the whole range — i.e. the expected O(n^3) per right-hand
+  side, very slightly steeper. **DVODE steps are essentially constant (75-89) and
+  `nfe` 111-160, so the growth is arithmetic, not the integrator struggling** — there
+  is no step-count explosion to fix.
+- **[measured] `construct` scales far more gently**, ~`n^1.4` in sum (and n^0.9 to
+  n^1.4 across successive rungs).
+- **[measured] Therefore the SRG share rises monotonically and steeply:**
+  **3.1 % -> 11.5 % -> 22.2 % -> 41.3 %** across Nmax 16 -> 28.
+- **[measured] The two-body NN flow cost is constant — 4.432 / 4.447 / 4.444 /
+  4.443 s — at every rung**, confirming directly that it depends only on
+  `N2max`/`J2max_NNint` and not on the three-body ramp. It is called **26 times per
+  three-body channel** (104 per rung). Its share of the flow cost falls from **3.74x
+  the three-body flow at Nmax 16 to 0.031x at Nmax 28**. See the P3c issue: the
+  redundancy is the *larger* flow cost at low Nmax and negligible at high Nmax.
+
+### The extrapolation does NOT explain `ramplarge`, which refutes my own prediction
+
+I predicted that a ~300-430x `n^3` term inside an 8.4 % share would make the SRG
+**dominant** on `ramplarge`. Extrapolating the measured law from flat28 (n=1575,
+72.891 s) to the `ramplarge` `j1p+t1` channel (n=4263):
+
+    predicted heaviest three-body flow  ~ 1625 s  ~ 27 min
+
+The observed `ramplarge` `j1p-t1` / `j1p+t1` channels took **5.37 h / 7.00 h**. So the
+SRG accounts for **at most ~8 %** of that wall — the extrapolation misses by ~10x.
+**[inferred] The three-body SRG is not the `ramplarge` bottleneck**; it becomes large
+(41 % by Nmax 28) but does not explain 5.4 h.
+
+**The ~10x remains unexplained, and none of the candidates is tested:**
+
+- The 8x4 run had **8 heavy flows running concurrently on one node**, all executing
+  large O(n^3) dgemm — the ladder ran 4 concurrent single-threaded flows. Bandwidth
+  contention is a real possibility and would inflate the observed wall time.
+- **Cache/working-set**: at n=4263 a matrix is ~145 MB and the ODE carries many of
+  them, so the working set leaves cache and the effective flop rate can collapse
+  well beyond the n^3 prediction. That would steepen the exponent above n=1575.
+- DVODE `method_flag=10` (BDF) with `mxstep=50000`: step counts are flat to n=1575
+  but that is not proof they stay flat.
+
+**Next, and it is cheap:** extend the ladder to `flat32`/`flat36`/`flat40` with the
+same 4x1 configuration. flat28 (n=1575) took only **178 s** wall, so flat40 is
+~20-70 min at the measured exponent — affordable, and it settles whether the
+extrapolation or the observation is wrong, without the 8-way concurrency of the
+original run. Only then is a fix proposal worth writing.
+
 ## The memory hypothesis for `ramplarge` is REFUTED — 2026-10-03
 
 Tested because the recorded explanation for `ramplarge` being ~770x slower per
