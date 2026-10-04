@@ -384,7 +384,13 @@ the hoists before them.
 - [x] Complete `cfp/` distribution: the Nmax24 tail is 9.2 % of bytes at e3max6
 - [x] Ramp comparison at a **matched** configuration (8 ranks x 4 threads):
       rampsmall **32/32 channels in 13:04**; ramplarge **2/32 channels in 10:19:31**
-      when cancelled — roughly 770x per channel
+      when cancelled.
+      **The "~770x per channel" figure formerly attached to this is not a
+      like-for-like ratio** and must not be used as one: it compared different
+      configurations *and* different channel mixes. What is defensible is
+      per-channel and same-configuration — the heaviest `rampsmall` channel
+      (`j5p+_t1`) takes **202.7 s** single-threaded, and `ramplarge`'s `j1p-t1` /
+      `j1p+t1` took **5.37 h / 7.00 h** at 8x4. See `FINDINGS.md`.
 - [x] Production-ramp recommendation: **do not use `ramplarge` at this size.** Three
       independent failures — OOM at 32 ranks, cancelled at 8x1, time-limited at 8x4 —
       plus the cost ratio above. `rampsmall` (or an intermediate ramp) is the only
@@ -413,10 +419,14 @@ settings/method vs eigensolver), so this must be split **before** anything chang
 
 1. **The ramp assigns Nmax per channel by J.** `ramp40-5-36-7-32-9-28-11-24` means
    `j <= 5 -> 40`, `<= 7 -> 36`, `<= 9 -> 32`, `<= 11 -> 28`, else `24`
-   (`GetRampNmax`, `ThreeBodyJacobiSpaceIso.F90`). The cheap channels finish first,
-   so timers read off a running `ramplarge` job sample only the **cheapest**
-   channels — the 2/32 that completed in 10:19:31 were almost certainly Nmax 24.
-   Any conclusion drawn from them understates the heavy channels.
+   (`GetRampNmax`, `ThreeBodyJacobiSpaceIso.F90`).
+   **CORRECTED 2026-10-03 — I had the consequence backwards.** I assumed the cheap
+   channels finish first, so the 2/32 that completed in 10:19:31 "were almost
+   certainly Nmax 24". The farm builds its unit list as
+   `do t; do j = 1, jmax3; do p`, so **low J — and therefore the largest Nmax — is
+   dispatched first**. The two completed channels were `j1p-t1` and `j1p+t1`, both
+   **Nmax 40**, finishing at **5.37 h** and **7.00 h**. Timers read off a running
+   `ramplarge` job sample the **heaviest** channels, not the cheapest.
 2. **The arithmetic does not close.** `rampsmall` does 32/32 channels in 13:04 at
    8x4, so its channels are minutes; `ramplarge`'s cheapest took ~5 h. A smooth
    n^3 rise from Nmax 20 to 24 cannot explain that. So either the scaling is
@@ -454,11 +464,16 @@ settings/method vs eigensolver), so this must be split **before** anything chang
        `n`. **If it is ~3 the cost is expected O(n^3) work; if the step count
        explodes the target is the integrator.** Stop as soon as the exponent is
        pinned — not when the largest rung finishes.
-3. [ ] **The memory hypothesis, cheaply.** Re-run one rung with a generous matched
-       `--mem` request and compare peak RSS against wall time. If cost jumps at a
-       memory boundary, part of the "770x" is a resource-request artifact, and the
-       recorded correction above (memory is a request, not a wall) already predicts
-       that this is possible.
+3. [x] **The memory hypothesis — TESTED AND REFUTED (2026-10-03), run out of order**
+       because it was the cheapest path to a useful answer. Doubling the allocation
+       (32 G vs 64 G, i.e. 18 % vs 59 % headroom) changes wall time by 1 % (108 s vs
+       109 s); the 8-rank `ramplarge` runs used only 60-66 % of their limits; 4
+       threads cost 1.62x more memory and *halved* wall time on `rampsmall`; and
+       peak RSS is flat across rank counts, so the redistribution does not
+       accumulate. **The surviving explanation is the n^3 state dimension**: `j1p+t1`
+       goes 632 -> 4263 orthonormal states (307x cubed) and `j5p+_t1` 1503 -> 11340
+       (429x cubed), which is what stage 1 tests. Details in `FINDINGS.md`, "The
+       memory hypothesis for `ramplarge` is REFUTED".
 4. [ ] **Only if 2-3 leave it open:** reproduce the production point — real ramp,
        `jmax3 = 5` (12 channels, all Nmax 40 since `j <= 5`) — on one large node with
        a matched request. This is the *confirmation*, not the discovery, and should
