@@ -677,6 +677,48 @@ neutral (81/82/83 s across all variants, inside run-to-run noise) and are not
 carried. They are described here so they are not re-tried. Note the fusion also
 removed a dead `a = exp(...)` computation in `init_zx_function`.
 
+## MPI side: what the run's own timers already say — 2026-10-03
+
+Taken from the hoist 8x4 run's own `#PROF_CAT` table (rank 0), not from a
+profiler, so these are the code's own numbers:
+
+| timer | s | share of wall |
+| --- | --- | --- |
+| **MPI parent-child, three-body force** | **266.37** | **99.5 %** |
+| MPI parent-child, set three-body Jacobi op | 0.53 | 0.2 % |
+| `TMTransScalarIsospin` (the lab transform, **which contains the `mpi_bcast` redistribution loop**) | **0.031** | 0.01 % |
+| Write to file | 0.32 | 0.1 % |
+| (wall) | 267.8 | |
+
+- **[measured] The O(sum dim^2) redistribution is NOT a time cost at this size.**
+  The serial `do ich ... call mpi_bcast(this%MatCh(ch,ch)%m(1,1), n1d, ...)`
+  loop at `ThreeBodyLabOpsIso.inc:923-939` sits inside `TMTransScalarIsospin`,
+  which takes 0.031 s out of 267.8 s. The plan listed this redistribution as one
+  of the "two concrete targets"; that was wrong for this case. It remains a
+  *memory* concern for production sizes (every rank ends up holding every
+  channel), but not a time one here, and it should not be optimised first.
+- **[measured] The whole wall is the outer farm** (`TMTransFunctions.inc:25`,
+  `parent_child_procedure(calc_each_channel, nch, ...)`), whose work unit is one
+  whole channel's 3NF construction.
+- **[inferred] Rank 0 never calls `Method`**, so only `nprocs-1` ranks compute.
+  That bounds the recoverable gain from rank-0 participation at
+  `nprocs/(nprocs-1)`: **14.3 % at 8 ranks, 3.2 % at 32**. It is not the dominant
+  loss — if it were, `T` would scale as `1/(nprocs-1)`, and the measured
+  8x1 -> 32x1 gain of 1.54x is far below the 4.43x that model predicts. So rank-0
+  idleness is worth fixing only at low rank counts, and it cannot explain the
+  scaling failure.
+
+### Measurement caveat: the per-rank logs cannot show imbalance
+
+All eight rank logs of the 8x4 run report the **same** farm time
+(266.366-266.387 s, a spread of 0.008 %). This is structural, not a finding about
+balance: a worker exits the farm only after the master's finalize sweep sends it
+a zero, and the master only runs that sweep after every unit has been dispatched,
+so every rank leaves at essentially the same instant. The farm time in the logs
+therefore measures the makespan, not the per-rank workload. Deriving "imbalance"
+from these logs would be a mistake; it needs unit-count data from the master's
+`slranks` array or added per-rank timers.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
