@@ -50,6 +50,13 @@ LFLAGS+= -Wl,-rpath,$(ICC_GSL)/lib -Wl,-rpath,$(MKLROOT)/lib
 FFLAGS= -O3
 CFLAGS= -O3
 FFLAGS+= -fopenmp
+# Instruction set: deliberately NOT set.  -march=x86-64-v3 (AVX2/FMA) was tried
+# and measured neutral -- 148 s vs 150 s on the ramp small case at 16x2, inside
+# the 1.6 % run-to-run noise -- so it is not worth the portability constraint it
+# adds.  The hot loops are dominated by library calls and memory access, not by
+# scalar-vs-vector codegen, and MKL picks its own kernels at run time anyway.
+# (If it is ever revisited: not -march=native, since the pool is heterogeneous,
+# and not x86-64-v4, since AVX-512 would exclude the Zen 2 nodes.)
 # GCC >= 13 turns free-form line truncation (>132 chars) into an error and the
 # generic compile rules do not pass $(FLINES), so disable the limit globally.
 FFLAGS+= -ffree-line-length-0

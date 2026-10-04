@@ -911,6 +911,68 @@ were both in play in this session, and the numbers were nearly read as current. 
 directory now carries a timestamp (`NH_PROFILE_TAG` to override). **Any profile number
 must be quoted with the run it came from.**
 
+## Compiler flags are neutral, and the "serial fraction" is not serial code — 2026-10-03
+
+Two questions raised before committing to the row-block refactor.
+
+### `-march` (and friends): neutral
+
+The ICC build had **no `-march` at all**, so gcc targeted the SSE2 baseline on
+Zen 5 and Ice Lake-SP hardware. Tried `-march=x86-64-v3` (AVX2/FMA; safe on every
+model in the pool — deliberately not `native`, since the pool is heterogeneous,
+and not `v4`, since AVX-512 would exclude the Zen 2 nodes).
+
+| 16x2, ccc0497, ramp small | wall |
+| --- | --- |
+| `ladder` (no `-march`) | 148 s |
+| `optv3` (`-march=x86-64-v3`) | 150 s |
+
+- **[measured] No benefit — inside the 1.6 % run-to-run noise. Reverted**, so the
+  binary keeps no unnecessary ISA requirement. (Deuteron unchanged at
+  -2.22434846 either way, so vectorisation did not perturb numerics.)
+- **[inferred] Our hot loops are not limited by scalar-vs-vector codegen.** They
+  are dominated by library calls (GSL/MKL) and memory access, and MKL selects its
+  own kernels at run time regardless of `-march`. This is consistent with the
+  bandwidth picture below.
+
+### The ~50 % "serial fraction" has no serial block to fix
+
+The phase is now 114 s at 1 thread vs 71 s at 4 — only **1.61x**, i.e. an apparent
+serial fraction of ~50 %, *up* from ~35 % (removing parallel arithmetic raised the
+relative serial share, as predicted). Per-component absolute times (`pct x wall`):
+
+| component | 1 thread | 4 threads | speedup |
+| --- | --- | --- | --- |
+| NuHamil_serial.exe | 51.4 s | 14.2 s | 3.62 |
+| libmkl_def | 35.8 s | 13.9 s | 2.58 |
+| libm | 18.0 s | 5.8 s | 3.10 |
+| libgcc | 3.9 s | 1.0 s | 3.90 |
+| libgsl | 3.0 s | 0.8 s | 3.75 |
+| **libgomp (idle)** | **0** | **32.5 s** | — |
+
+- **[measured] Work scales 112 s -> 38.5 s = 2.91x** (73 % efficiency); the other
+  **32.5 s of the 4-thread wall is thread idle at barriers**.
+- **[measured] Nothing is serial.** Every component scales >= 2.58x. The weakest
+  is MKL, and inside it `mkl_blas_def_xdcopy` scales only **1.25x** — the
+  signature of a bandwidth-bound copy, not of serialisation.
+- **[inferred] So the "serial fraction" is not a block of code that could be
+  parallelised.** It is (a) sub-linear scaling spread across every component plus
+  (b) barrier idle, and the most likely mechanism is **memory-bandwidth
+  contention** — consistent with the earlier incidental observation that full-case
+  node times tracked the triad benchmark rather than `gemm1`.
+- **[inferred] This also explains why every OpenMP-side fix failed**: imbalance,
+  region count and schedule tuning all address *distribution*, but the limit here
+  is *supply*.
+
+### Consequence for the plan
+
+The **1.87x granularity figure was measured on the `hoist` binary**, before the
+math work re-shaped the work distribution a second time. If the real limit is
+bandwidth rather than granularity, then finer work units will not deliver 1.87x,
+and the row-block refactor would be a large change bought on stale evidence.
+**Re-measure the granularity and configuration picture with the current binary
+before starting it** — a few runs, versus a rewrite.
+
 ## Node calibration probe: built, and NOT validated — 2026-10-03
 
 Idea: scavenger placement is a hidden variable worth up to 1.67x, and pairing
