@@ -1282,6 +1282,56 @@ had been proposing for several turns rested on a wrong mental model.
   (`cfp = jac%GetCFPMat()` then `this%DMat = cfp%T() * work * cfp`) — though that
   was later measured as worthless too (see "Second attempt").
 
+## `ramplarge`'s per-phase profile differs materially from `rampsmall`'s — 2026-10-03
+
+Side observation from the `ramplarge` probe (which OOM'd, see below). It carried the
+`#PROF_PRE` and `#PROF_SPLIT` instrumentation, so we get a per-phase profile of a real
+production-ramp channel for the first time.
+
+**`#PROF_PRE`, seconds per channel:**
+
+| part | `rampsmall` | `ramplarge` | |
+| --- | --- | --- | --- |
+| `ls12%init` | 0.569 | **8.64** | 15x |
+| `ls3%init` | 0.233 | **3.55** | 15x |
+| `init_zx_function` | 0.383 | 0.194 | |
+| **`init_fkx_function`** | **16.642** | **0.634** | **26x *cheaper*** |
+| everything else | <=0.03 each | <=0.27 each | |
+
+**[inferred] The `init_fkx_function` reversal is not a scaling effect — a bigger space
+cannot make a routine 26x cheaper.** The two runs used *different code paths*: the
+`rampsmall` figure is from a pre-guard build with an **unconditional**
+`gsl_sf_bessel_jl_array(L, x)`, the `ramplarge` figure from the **guarded** build that
+truncates at the highest order passing `athr`. So this says the guard is not only a
+crash fix but a large **performance** win: the unguarded ladder was computing orders
+that the threshold then discarded.
+
+**[inferred] That re-reads the 6b result.** The 6b ladder was measured as 1.13x against
+the *unconditional* baseline; if most of what it computed was being thrown away, then
+the honest comparison is guarded-ladder vs per-order, not ladder vs per-order. The
+rampsmall `#PROF_PRE` numbers must be **re-measured with the guard build** before the
+"`init_fkx_function` is 93 % of `precalculations`" finding (and the 1.35x fusion win
+built on it) are quoted again.
+
+**`#PROF_SPLIT`, per channel, seconds** (`init` / `set` / **`inside`** / `release`):
+
+| ramp | init | set | **inside** | inside/set |
+| --- | --- | --- | --- | --- |
+| `rampsmall` | 22.5 | 6.1-7.2 | 0.14-0.18 | **2.3 %** |
+| `ramplarge` | 13.3 | 59.5-223.6 | 6.9-32.0 | **11.6-14.3 %** |
+
+**[measured] The element loop is ~10x more significant at the production ramp** — ~13 %
+of `set` versus 2.3 %. The row-split was abandoned because that loop was ~1 % at
+`rampsmall`; at `ramplarge` it is substantial enough to matter, though `set` as a whole
+is still the target and the element loop is not its dominant part. **This is another
+case of a `rampsmall`-derived conclusion not transferring to the production ramp.**
+
+**The probe itself OOM'd — my error.** I requested `--mem=128G` for 8 ranks, i.e. 16 GB
+per rank, when the case needs ~20-34 GiB/rank. Same class of mistake as the original
+`--mem=200G` OOM already recorded above: **memory is a request, and I under-requested
+it again.** No conclusion depends on the failed run; the two Nmax-40 channels it did
+complete are the ones that refuted the 5.37 h.
+
 ## `ramplarge` re-measured: the 5.37 h was an artifact, and the case is now practical — 2026-10-03
 
 The real `ramplarge` case, re-run with the current binary at **8 ranks x 4 threads on
