@@ -52,6 +52,15 @@ if ! nh_check_partition "${SLURM_JOB_PARTITION:-}"; then
     exit 2
 fi
 
+# Same for the account, and for the same reason: Slurm will charge whichever
+# account it is given, but only soham-ic is this project's to spend.  Refusing
+# here means a disallowed account cannot burn cluster time even if the job was
+# queued by bypassing submit.sh.
+if ! nh_check_account "${SLURM_JOB_ACCOUNT:-}"; then
+    echo "ERROR: aborting before doing any work." >&2
+    exit 2
+fi
+
 RUNDIR="${NUHAMIL_RUNDIR:-$SCRATCH_ROOT/runs/$CASE}"
 TAG="${NUHAMIL_TAG:-base}"
 NTASKS="${SLURM_NTASKS:-1}"

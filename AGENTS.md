@@ -21,6 +21,8 @@ Use `scavenger` (pre-emptible; pass `--requeue`) or `IllinoisComputes`. **Do not
 
 **Submit through `bench/submit.sh`, never `sbatch` directly.** It validates the partition against an allow-list (`bench/partitions.sh`) and refuses before anything is queued. Both `.sbatch` scripts also check `$SLURM_JOB_PARTITION` as defence in depth. `NH_PARTITION_OVERRIDE=1` forces a refusal through with a warning.
 
+**Use `soham-ic`, never `ncsa-ic`.** The user holds several Slurm accounts and Slurm will happily charge any of them, but only **`soham-ic`** is this project's to spend. The same `bench/partitions.sh` now enforces this: `submit.sh` reads `-A/--account` and refuses anything else before queuing, and `run_case.sbatch` re-checks `$SLURM_JOB_ACCOUNT` as defence in depth — so a disallowed account cannot burn cluster time even if `submit.sh` was bypassed. Note that `IllinoisComputes` is account-gated and admits us only via an explicit `-A soham-ic`; omitting `-A` there fails inside `sbatch` with *"You must specify an account in order to submit a job to this partition"*, which reads like a permissions problem and is not one.
+
 ```bash
 bench/submit.sh -p scavenger --requeue -J nh-omp8x4 -n 8 -c 4 \
     --mem=64G --time=08:00:00 bench/run_case.sbatch <case-id>

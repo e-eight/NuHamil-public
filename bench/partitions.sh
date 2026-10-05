@@ -52,3 +52,56 @@ nh_check_partition() {
     printf 'To override deliberately: NH_PARTITION_OVERRIDE=1\n' >&2
     return 1
 }
+
+# ---------------------------------------------------------------------------
+# Account policy.  Same shape of rule as the partition list above, and here for
+# the same reason: the scheduler enforces what it will *accept*, not what the
+# project is *allowed* to use.
+#
+# The user holds several accounts (`sacctmgr show assoc user=soham`) and Slurm
+# will happily charge any of them.  For this project only `soham-ic` may be used;
+# `ncsa-ic` in particular is NOT ours to spend.  That is a policy fact about the
+# project, and Slurm cannot know it, so it has to live here.
+#
+# IllinoisComputes is account-gated: it admits acc-illinoiscomputes/acc-ncsa via
+# AllowAccounts, and our access is via `-A soham-ic`.  Omitting `-A` there fails
+# with a misleading "You must specify an account in order to submit a job to this
+# partition" -- which reads like a permissions problem and is not one.  So an
+# explicit allowed account is REQUIRED for that partition.
+
+NH_ALLOWED_ACCOUNTS="soham-ic"
+NH_ACCOUNT_REQUIRED_PARTITIONS="IllinoisComputes IllinoisComputes-GPU"
+
+nh_account_reason() {
+    case "$1" in
+        soham-ic)
+            printf '%s' "" ;;
+        "")
+            # No -A given: fine on partitions that resolve a default account.
+            # Where an account is genuinely required, nh_partition_needs_account
+            # below catches it -- keeping "omitted" apart from "not allowed".
+            printf '%s' "" ;;
+        ncsa-ic)
+            printf '%s' "not this project's account -- ncsa-ic is not ours to spend" ;;
+        *)
+            printf '%s' "not on the NuHamil-faster account allow-list ($NH_ALLOWED_ACCOUNTS)" ;;
+    esac
+}
+
+# Return 0 if the account may be used, 1 with an explanation otherwise.
+nh_check_account() {
+    _nh_areason=$(nh_account_reason "$1")
+    [ -z "$_nh_areason" ] && return 0
+    printf 'REFUSING account "%s": %s\n' "${1:-(none given)}" "$_nh_areason" >&2
+    printf 'Allowed accounts for this project: %s\n' "$NH_ALLOWED_ACCOUNTS" >&2
+    return 1
+}
+
+# IllinoisComputes needs an account passed explicitly, so require one there
+# rather than letting sbatch fail with a message that misattributes the cause.
+nh_partition_needs_account() {
+    case "$1" in
+        IllinoisComputes | IllinoisComputes-GPU) return 0 ;;
+        *) return 1 ;;
+    esac
+}
