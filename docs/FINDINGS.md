@@ -1282,6 +1282,40 @@ had been proposing for several turns rested on a wrong mental model.
   (`cfp = jac%GetCFPMat()` then `this%DMat = cfp%T() * work * cfp`) — though that
   was later measured as worthless too (see "Second attempt").
 
+## `ramplarge` full run: 3/32 channels in an hour, SRG 68-82 %, heaviest channel ~50 min — 2026-10-03
+
+Full production-ramp run, 8 ranks x 4 threads, `--mem=350G`, on ccc0496. It hit the
+1-hour wall limit, having completed **3 of 32 channels**:
+
+| channel | `construct` | `diag` | `srg` | total | **SRG share** |
+| --- | --- | --- | --- | --- | --- |
+| #1 (j=1, Nmax 40) | 165.2 s | 4.9 s | 354.7 s | 524.8 s | 67.6 % |
+| #2 (j=1, Nmax 40) | 163.3 s | 5.8 s | 483.2 s | 652.3 s | 74.1 % |
+| **#3** | **527.4 s** | **28.0 s** | **2474.3 s** | **3029.7 s** | **81.7 %** |
+| total | 855.9 s | 38.7 s | 3312.2 s | 4206.8 s | **78.7 %** |
+
+- **[measured] The SRG share of a real production-ramp channel is 68-82 %** — higher
+  than the ladder's flat40 figure (73.8 %), and it *rises with the channel's size*. This
+  is now measured on the production ramp rather than extrapolated at all.
+- **[measured] Channel #3 took 50.5 minutes on its own**, 7x the `srg` of #1 and #2 at
+  the same Nmax. Dimension grows with J faster than the ramp shrinks Nmax, which the
+  `rampsmall` histogram had already hinted at (its heaviest channel was `j5p+_t1`, not
+  `j1`). The heaviest channels are not the ones the ramp gives the largest Nmax.
+- **[inferred] A full `ramplarge` run is likely ~2-3 h, not "10:19:31 for 2/32".** The
+  farm dispatches heaviest-first, so the 29 remaining channels are lighter than the
+  three above; with 32 channels over 8 workers the makespan is set by the ~50 min
+  channels repeated a couple of times. **This should be measured, not assumed** — it is
+  an estimate from 3 channels.
+- **[measured] `diag` stays negligible** (4.9-28.0 s, 0.9-1.4 %), confirming at
+  production scale what the ladder showed: the flow is the ODE, not the eigensolver.
+
+**Still open, and now the main one:** the SRG is 78.7 % of the measured compute of these
+channels and scales as n^3.11, so it *is* the thing to attack for the production ramp —
+but the earlier "dominate it by removing redundancy" leads are exhausted (the 19x was an
+artifact of the unguarded ladder; the two-body redundancy is negligible above Nmax 24).
+Attacking it now means attacking the ODE integration itself, which is a different and
+much larger piece of work, and should not be started on the strength of three channels.
+
 ## `ramplarge`'s per-phase profile differs materially from `rampsmall`'s — 2026-10-03
 
 Side observation from the `ramplarge` probe (which OOM'd, see below). It carried the
