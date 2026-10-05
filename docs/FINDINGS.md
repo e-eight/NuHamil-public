@@ -1282,6 +1282,63 @@ had been proposing for several turns rested on a wrong mental model.
   (`cfp = jac%GetCFPMat()` then `this%DMat = cfp%T() * work * cfp`) — though that
   was later measured as worthless too (see "Second attempt").
 
+## Contention refuted, and a flaw in my own ladder: `j3max_initial_3nf` — 2026-10-03
+
+### Threads help, and more ranks cost nothing
+
+Same rung (flat32), same four channels, same CPU model, only the shape changed:
+
+| config | wall | heaviest 3body flow (n=2280) |
+| --- | --- | --- |
+| ladder 4 ranks x **1 thread** | 469 s | **255.9 s** |
+| contend 4 ranks x **4 threads** | **132 s** | **56.2 s** — **4.6x faster** |
+| contend 8 ranks x 4 threads (8 channels) | — | **58.6 s** — no penalty |
+
+- **[measured] The bandwidth-contention hypothesis is REFUTED, and reversed.** Four
+  threads make a flow **4.6x faster**, and doubling the rank count at the same thread
+  count costs nothing. So the original `ramplarge` run's thread configuration was
+  *helping*, not hurting, and the ladder's 4x1 numbers are a pessimistic baseline.
+- **[inferred] That widens the gap rather than closing it.** Correcting the observed
+  5.37 h channel for the 4.6x that threads should have bought makes the unexplained
+  factor ~35x, not ~7.7x. Also worth noting: DVODE `steps` differ between the 1-thread
+  and 4-thread runs (98 vs 76) for the same n — MKL threading changes the summation
+  order in the ODE right-hand side, so the adaptive integrator takes a different path.
+  Same channel, same physics, different step count: worth remembering before comparing
+  step counts across configurations.
+
+### The flaw: `jmax3=1` silently set `j3max_initial_3nf=1`
+
+`j3max_initial_3nf` defaults to `-1`, and `NuHamilInput.F90` sets it to
+**`params%jmax3`** when it is unset. My ladder inputs set `jmax3 = 1` (to get 4
+channels) and never set `j3max_initial_3nf`, so every ladder rung built the 3NF with
+**`J3max_initial_3nf = 1`** — while production uses **15** (`jmax3 = 15`).
+
+`J3max_initial_3nf` is passed into the local 3NF construction
+(`NNNForceHOIsospin.F90:448,477,482`), so:
+
+- **[inferred] The `construct` column of the ladder table — and therefore the SRG
+  *share* derived from it — is NOT representative of the production case.** The share
+  figures (3.1 % ... 73.8 %) were computed as `srg / (construct + diag + srg)`, and
+  `construct` was measured under a smaller 3NF truncation than production uses.
+- **[measured] The `srg` column itself is sound**, because the flow acts on `h`, and
+  `h`'s dimension matched production exactly: the flat40 heaviest flow has n = 4263,
+  identical to `ramplarge`'s `j1p+t1` orthonormal state count (4263).
+- **[inferred] This is a plausible home for the missing ~35x.** `construct` was
+  already known to dominate a `rampsmall` channel (42.2 % `init` + 56.8 % `set` in the
+  abandoned row-split work). If `construct` at J3max = 15 is vastly more expensive than
+  at J3max = 1, then `construct` — not the SRG — is where `ramplarge`'s hours went,
+  which is consistent with every measurement made so far.
+
+**Test submitted:** the identical flat36 rung at 4 ranks x 1 thread, matching
+`j3max_initial_3nf = 15` instead of 1 — single variable, so the `construct` sum can be
+compared directly against the ladder's 683.39 s. If `construct` inflates by a large
+factor, that is the answer; if it barely moves, this is ruled out too.
+
+**Also now suspect: the observed 5.37 h itself.** Every measurement since is
+inconsistent with it by 27-35x. It was derived from an `ops/` file mtime, on a run
+whose directory was shared with two earlier attempts. It should be re-established
+independently before any further conclusion rests on it.
+
 ## Ladder complete: the SRG flow is 8 % of a `ramplarge` channel — the answer is NO — 2026-10-03
 
 The ladder now reaches the top of the real ramp (the guard fix unblocked flat40).
