@@ -1329,15 +1329,33 @@ channels) and never set `j3max_initial_3nf`, so every ladder rung built the 3NF 
   at J3max = 1, then `construct` — not the SRG — is where `ramplarge`'s hours went,
   which is consistent with every measurement made so far.
 
-**Test submitted:** the identical flat36 rung at 4 ranks x 1 thread, matching
-`j3max_initial_3nf = 15` instead of 1 — single variable, so the `construct` sum can be
-compared directly against the ladder's 683.39 s. If `construct` inflates by a large
-factor, that is the answer; if it barely moves, this is ruled out too.
+**Test done — REFUTED too.** The identical flat36 rung at 4 ranks x 1 thread, with
+only `j3max_initial_3nf` changed from 1 to 15:
 
-**Also now suspect: the observed 5.37 h itself.** Every measurement since is
-inconsistent with it by 27-35x. It was derived from an `ops/` file mtime, on a run
-whose directory was shared with two earlier attempts. It should be re-established
-independently before any further conclusion rests on it.
+| flat36, 4r x 1t | construct | diag | srg | srg share |
+| --- | --- | --- | --- | --- |
+| `j3max_initial_3nf = 1` (ladder) | 683.39 s | 16.18 s | 1191.29 s | 63.0 % |
+| `j3max_initial_3nf = 15` (production) | **668.20 s** | 15.65 s | **1193.99 s** | **63.6 %** |
+
+**[measured] Identical within 2 %**, wall 1029 s vs 1044 s (1.4 % apart). So although
+the flag really is set differently, it has **no measurable effect on this channel's
+cost**, and the ladder's `construct` column and SRG shares stand as measured. The
+coupling is a latent trap for anyone else building a reduced `jmax3` case, but it is
+not the missing factor.
+
+**Also now suspect — and after two refutations, it is the prime suspect: the observed
+5.37 h itself.** Every measurement since is inconsistent with it by 27-35x, and it came
+from an `ops/` file mtime on a run directory shared with two earlier attempts. Two
+plausible explanations have now been tested and refuted (thread contention; the
+`j3max_initial_3nf` coupling), which shifts the suspicion onto the original observation
+rather than onto the code.
+
+**And a reframing worth acting on:** with today's binary (2x+ from the MKL relink and
+the redundancy fixes) plus the measured 4.6x from threads, a heavy `ramplarge` channel
+should take **~10-20 min**, not 5.4 h. So the run that was abandoned as impractical may
+now fit inside a backfill window. **Re-measuring one heavy `ramplarge` channel with the
+current binary is the decisive next step** — it either reproduces the 5.37 h (and the
+mystery is real) or it does not (and `ramplarge` becomes practical).
 
 ## Ladder complete: the SRG flow is 8 % of a `ramplarge` channel — the answer is NO — 2026-10-03
 
