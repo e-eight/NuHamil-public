@@ -1282,6 +1282,45 @@ had been proposing for several turns rested on a wrong mental model.
   (`cfp = jac%GetCFPMat()` then `this%DMat = cfp%T() * work * cfp`) — though that
   was later measured as worthless too (see "Second attempt").
 
+## `ramplarge` re-measured: the 5.37 h was an artifact, and the case is now practical — 2026-10-03
+
+The real `ramplarge` case, re-run with the current binary at **8 ranks x 4 threads on
+ccc0499** — the *same node* and the same process shape as the original 5.37 h
+observation:
+
+| channel | original run | **current binary** | speedup |
+| --- | --- | --- | --- |
+| `j1p-t1` (Nmax 40) | 5.37 h | **~9.7 min** | **33x** |
+| `j1p+t1` (Nmax 40) | 7.00 h | **~12.3 min** | **34x** |
+
+Both heaviest channels completed inside the first 20 minutes of the job. **[measured]
+The 5.37 h is NOT reproducible.** It was almost certainly an artifact of the shared run
+directory (the case directory was reused across three failed attempts) or of the
+original node's condition — not a property of the calculation. Two independent
+explanations were tested and refuted first (thread contention; the `j3max_initial_3nf`
+coupling), which is what moved the suspicion onto the observation.
+
+**[measured] And the SRG is confirmed as the dominant component of a heavy channel:**
+
+    j1p-t1:  construct 143.5 s   diag 4.6 s   srg 354.7 s   -> SRG 70.5 %
+    j1p+t1:  construct 162.5 s   diag 5.8 s   srg 483.1 s   -> SRG 74.2 %
+
+That agrees with the ladder's flat40 share (73.8 %) and with the n^3.11 law. So the
+prediction I made early on — *the SRG becomes dominant on ramplarge* — was **right
+about the share and wrong about the magnitude**: 70 % of a ~12 min channel, not 70 % of
+5.4 h.
+
+**This reverses the P3b verdict.** `ramplarge` was abandoned as "not practical at this
+size" on the strength of 2/32 channels in 10:19:31. With today's binary it does the two
+heaviest channels in 12 min. The case should be re-assessed as a candidate production
+ramp rather than written off — and the accuracy/cost knee question in P3b (which ramp
+to use) can now be asked again on measured cost rather than on a projection.
+
+**Caveat to close out:** the original run's `ops/` timestamps were used for the 5.37 h,
+and that method has now been shown to be unreliable on a reused directory. Any future
+per-channel claim should come from `#PROF_*` timestamps inside a single clean run, not
+from file mtimes on a shared case directory.
+
 ## Contention refuted, and a flaw in my own ladder: `j3max_initial_3nf` — 2026-10-03
 
 ### Threads help, and more ranks cost nothing
