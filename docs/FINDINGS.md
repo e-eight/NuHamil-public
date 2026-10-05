@@ -1306,12 +1306,37 @@ truncates at the highest order passing `athr`. So this says the guard is not onl
 crash fix but a large **performance** win: the unguarded ladder was computing orders
 that the threshold then discarded.
 
-**[inferred] That re-reads the 6b result.** The 6b ladder was measured as 1.13x against
-the *unconditional* baseline; if most of what it computed was being thrown away, then
-the honest comparison is guarded-ladder vs per-order, not ladder vs per-order. The
-rampsmall `#PROF_PRE` numbers must be **re-measured with the guard build** before the
-"`init_fkx_function` is 93 % of `precalculations`" finding (and the 1.35x fusion win
-built on it) are quoted again.
+**[measured] Confirmed on `rampsmall` itself, same case / same node / same
+configuration — only the binary differs.** The guard build's `#PROF_PRE` was already on
+disk, so no new run was needed:
+
+| `rampsmall`, `#PROF_PRE` per channel | pre-guard | **guard** | |
+| --- | --- | --- | --- |
+| **`init_fkx_function`** | **16.642 s** | **1.250 s** | **13.3x less** |
+| `ls12%init` | 0.569 s | 0.564 s | unchanged |
+| `ls3%init` | 0.233 s | 0.231 s | unchanged |
+| `init_zx_function` | 0.383 s | 0.384 s | unchanged |
+| everything else | — | — | unchanged |
+
+- **[measured] `init_fkx_function`'s share of `precalculations` falls from 93.1 % to
+  39-51 %** (the spread is across channels; `precalculations` total drops from 17.87 s
+  to 2.47-3.21 s per channel). The 93 % figure was therefore measuring work that was
+  **computed and then discarded** by the `athr` threshold.
+- **[inferred] This re-reads the 6b result.** 6b (the ladder) was measured as 1.13x
+  against the *unconditional per-order* baseline, and the 1.35x fusion that followed
+  was measured against a build whose `init_fkx_function` was still doing 16.6 s of
+  mostly-discarded work. **Both need re-validation against the current (guarded)
+  binary before they are quoted again** — they are not necessarily wrong, but their
+  baselines contained work that no longer exists.
+- **[measured] The wall-clock comparison is confounded and must NOT be quoted yet.**
+  The guard build's rampsmall run took **120 s** and the pre-guard `fuse` build's took
+  **103 s** — the wrong direction for a change that removes 15.4 s of per-channel work.
+  The two ran on ccc0499 hours apart at different co-tenant load. A back-to-back
+  same-node A/B is needed to state the guard's wall-time effect.
+- **[inferred] Practical consequence:** the `init_fkx_function` line of investigation —
+  "the largest single cost in the code, 19 % of the run" — is **closed**. It was an
+  artifact of the unguarded ladder, and the honest description is that the guard fixed
+  both a crash and a 13x inefficiency in the same routine.
 
 **`#PROF_SPLIT`, per channel, seconds** (`init` / `set` / **`inside`** / `release`):
 
